@@ -71,6 +71,9 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_RISK_BTN_GAP     6           // mezera mezi tlacitky predvoleb rizika
 #define PQE_MAX_RISK_PRESETS 8           // nejvyse tolik predvoleb rizika
 #define PQE_RISK_EPS         0.005       // tolerance shody rizika s predvolbou (%)
+#define PQE_MAX_POINTS       1000000     // horni mez SL / PT v bodech (chrani prevod na int)
+#define PQE_MAX_RISK_PCT     100.0       // horni mez rizika na obchod (% zustatku)
+#define PQE_FORM_FIELDS      3           // pocet editacnich poli formulare (SL, PT, riziko)
 #define PQE_CLOSE_SHARE_CANCEL 0.42      // podil sirky rady zavirani pro ZRUSIT PRIKAZY (nejdelsi popisek)
 #define PQE_CLOSE_SHARE_ONE    0.26      // podil sirky rady zavirani pro ZAVRIT 1 (nejkratsi popisek)
 
@@ -170,6 +173,47 @@ struct SSentOrder
    double            tpDist;    // vzdalenost PT od vstupu (cena, 0 = bez PT)
   };
 
+//--- Stav trhu a formulare spocteny jednou za prekresleni panelu.
+//--- Panel se obnovuje kazdou sekundu a kazdy dotaz do terminalu (pocty
+//--- prikazu, povoleni obchodu) neco stoji - drive si je stavove radky
+//--- i jednotliva tlacitka zjistovaly kazde zvlast.
+struct SPanelState
+  {
+   int               orders;       // pocet cekajicich prikazu experta
+   int               positions;    // pocet otevrenych pozic experta
+   string            formError;    // chyba formulare ("" = v poradku)
+   bool              canTrade;     // lze otevrit novy obchod
+   string            tradeReason;  // duvod zakazu otevirani
+   bool              canClose;     // lze zavirat pozice a rusit prikazy
+   string            closeReason;  // duvod zakazu zavirani
+   double            balance;      // zustatek uctu
+   double            slDist;       // vzdalenost SL v cene podle formulare
+   double            lots;         // objem z rizika (0 = nelze spocitat)
+   string            lotReason;    // duvod, proc objem nelze pouzit
+  };
+
+//--- Svisle rozvrzeni panelu. Pocita se na jednom miste, aby pozadi,
+//--- obsah a IsInsidePanel vzdy sedely - drive se celkova vyska scitala
+//--- zvlast a musela se rucne udrzovat v souladu s vykreslovanim.
+struct SPanelLayout
+  {
+   int               left;         // levy okraj panelu
+   int               top;          // horni okraj panelu
+   int               width;        // sirka panelu
+   int               height;       // celkova vyska panelu
+   int               pad;          // vnitrni okraj
+   int               gap;          // mezera mezi tlacitky
+   int               btnH;         // vyska tlacitek
+   int               statusH;      // vyska stavoveho radku
+   int               yTitle;       // titulek s cenou
+   int               yFields[PQE_FORM_FIELDS]; // radky formulare (SL, PT, riziko)
+   int               yRisk;        // rada predvoleb rizika
+   int               yBuySell;     // tlacitka BUY / SELL
+   int               yStops;       // tlacitka BUYSTOP / SELLSTOP
+   int               yClose;       // rada tlacitek zavirani
+   int               yStatus;      // prvni stavovy radek
+  };
+
 //--- Globalni stav
 CTrade        g_trade;                        // obchodni rozhrani
 ENUM_PQE_ARM  g_armed       = PQE_ARM_NONE;   // probihajici vyber mista vstupu
@@ -186,16 +230,34 @@ double        g_dpiScale    = 1.0;            // meritko DPI monitoru (1.0 = 96 
 double        g_layoutScale = 1.0;            // meritko rozmeru panelu (DPI x velikost pisma)
 double        g_riskPresets[];                // predvolby rizika pro tlacitka (%)
 
+//--- Naposledy vykresleny nahled vstupu. Slouzi k tomu, aby se graf
+//--- neprekresloval, kdyz se nahled nezmenil - OnTick chodi pri zpravach
+//--- i mnohokrat za sekundu a ChartRedraw je drahy.
+bool          g_pvShown     = false;          // je nahled prave v grafu?
+double        g_pvEntry     = 0.0;            // vykreslena cena vstupu
+double        g_pvSL        = 0.0;            // vykreslena cena SL
+double        g_pvTP        = 0.0;            // vykreslena cena PT
+string        g_pvText      = "";             // vykresleny popisek u kurzoru
+int           g_pvX         = -1;             // poloha popisku, pro kterou byl nahled vykreslen
+int           g_pvY         = -1;
+
 //+------------------------------------------------------------------+
 //| Inicializace experta                                             |
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   //--- Nesmyslne vstupy se odmitnou hned pri startu, ne az pri obchodu
-   if(InpStopLossPoints <= 0 || InpTakeProfitPoints < 0 || InpRiskPercent <= 0.0 ||
+   //--- Nesmyslne vstupy se odmitnou hned pri startu, ne az pri obchodu.
+   //--- Meze jsou stejne jako ve formulari (ApplyField) - jinak by expert
+   //--- nastartoval s hodnotou, kterou formular pri kazdem obchodu odmitne,
+   //--- a tlacitka by se nedala pouzit, dokud uzivatel hodnotu neprepise.
+   if(InpStopLossPoints <= 0 || InpStopLossPoints > PQE_MAX_POINTS ||
+      InpTakeProfitPoints < 0 || InpTakeProfitPoints > PQE_MAX_POINTS ||
+      InpRiskPercent <= 0.0 || InpRiskPercent > PQE_MAX_RISK_PCT ||
       InpSlippage < 0 || InpExpirationMinutes < 0 || InpPanelFontSize < 6)
      {
-      Print("PQE: neplatné vstupy - SL > 0, PT >= 0, riziko > 0, skluz >= 0, platnost >= 0, písmo >= 6.");
+      PrintFormat("PQE: neplatné vstupy - SL 1..%d b, PT 0..%d b, riziko 0..%.0f %%, "
+                  "skluz >= 0, platnost >= 0, písmo >= 6.",
+                  PQE_MAX_POINTS, PQE_MAX_POINTS, PQE_MAX_RISK_PCT);
       return(INIT_PARAMETERS_INCORRECT);
      }
 
@@ -343,11 +405,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
   }
 
 //+------------------------------------------------------------------+
-//| Vyplneni prikazu: SL a PT se dorovnaji na skutecnou plnici cenu. |
+//| Vyplneni prikazu: SL a PT se dorovnaji na skutecnou vstupni cenu.|
 //| STOP prikaz na Market execution se plni za trh a MARKET prikaz   |
 //| muze mit skluz - SL/PT pocitane od pozadovane ceny by pak nesly  |
 //| presne s rizikem. Vzdalenosti se berou z pameti odeslanych       |
-//| prikazu, po restartu experta z historie prikazu.                 |
+//| prikazu, po restartu experta z historie prikazu; meri se od      |
+//| prumerne vstupni ceny pozice (POSITION_PRICE_OPEN).              |
 //+------------------------------------------------------------------+
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
@@ -389,13 +452,23 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(slDist <= 0.0 && tpDist <= 0.0)
       return;
 
-   const double newSL = (slDist > 0.0) ? NormalizePrice(isBuy ? fill - slDist : fill + slDist) : 0.0;
-   const double newTP = (tpDist > 0.0) ? NormalizePrice(isBuy ? fill + tpDist : fill - tpDist) : 0.0;
-
    if(!PositionSelectByTicket(posId))
       return;
    const double curSL = PositionGetDouble(POSITION_SL);
    const double curTP = PositionGetDouble(POSITION_TP);
+
+   //--- Meri se od prumerne vstupni ceny pozice, ne od ceny jednoho
+   //--- obchodu: pri castecnem plneni prijde DEAL_ADD za kazdy dil a
+   //--- pri navysovani pozice na netting uctu se vstupy prumeruji -
+   //--- stopy podle posledniho dilu by neodpovidaly riziku cele pozice.
+   //--- Kdyby pozice cenu jeste nemela, pouzije se cena obchodu.
+   const double posOpen = PositionGetDouble(POSITION_PRICE_OPEN);
+   const double base    = (posOpen > 0.0) ? posOpen : fill;
+
+   //--- Chybejici vzdalenost necha stavajici uroven beze zmeny - nula
+   //--- predana do PositionModify by SL nebo PT z pozice smazala
+   const double newSL = (slDist > 0.0) ? NormalizePrice(isBuy ? base - slDist : base + slDist) : curSL;
+   const double newTP = (tpDist > 0.0) ? NormalizePrice(isBuy ? base + tpDist : base - tpDist) : curTP;
 
    //--- Bez skluzu neni co dorovnavat
    if(SamePrice(curSL, newSL) && SamePrice(curTP, newTP))
@@ -403,7 +476,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    if(g_trade.PositionModify(posId, newSL, newTP))
       g_lastEvent = StringFormat("#%I64u SL/PT dorovnány na %s",
-                                 posId, DoubleToString(fill, _Digits));
+                                 posId, DoubleToString(base, _Digits));
    else
       g_lastEvent = StringFormat("#%I64u SL/PT nedorovnány (%d)",
                                  posId, g_trade.ResultRetcode());
@@ -419,7 +492,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 //--- Jmena editacnich poli formulare (v poradi radku panelu)
 void FormFieldNames(string &names[])
   {
-   ArrayResize(names, 3);
+   ArrayResize(names, PQE_FORM_FIELDS);
    names[0] = PQE_OBJ_EDIT_SL;
    names[1] = PQE_OBJ_EDIT_TP;
    names[2] = PQE_OBJ_EDIT_RISK;
@@ -506,11 +579,14 @@ bool ApplyField(const string name, string text, string &error)
       return(false);
      }
 
+   //--- Horni mez neni jen kosmetika: prevod na int nesmi pretect, jinak
+   //--- by se z obrovske hodnoty stalo kladne cislo, ktere by kontrolami
+   //--- proslo a panel by ukazoval nesmyslnou cenu SL / PT
    if(name == PQE_OBJ_EDIT_SL)
      {
-      if(value < 1.0)
+      if(value < 1.0 || value > PQE_MAX_POINTS)
         {
-         error = "SL musí být aspoň 1 bod";
+         error = StringFormat("SL musí být v rozsahu 1..%d bodů", PQE_MAX_POINTS);
          return(false);
         }
       g_slPoints = (int)MathRound(value);
@@ -518,9 +594,9 @@ bool ApplyField(const string name, string text, string &error)
      }
    if(name == PQE_OBJ_EDIT_TP)
      {
-      if(value < 0.0)
+      if(value < 0.0 || value > PQE_MAX_POINTS)
         {
-         error = "PT nesmí být záporný";
+         error = StringFormat("PT musí být v rozsahu 0..%d bodů", PQE_MAX_POINTS);
          return(false);
         }
       g_tpPoints = (int)MathRound(value);
@@ -528,9 +604,9 @@ bool ApplyField(const string name, string text, string &error)
      }
    if(name == PQE_OBJ_EDIT_RISK)
      {
-      if(value <= 0.0 || value > 100.0)
+      if(value <= 0.0 || value > PQE_MAX_RISK_PCT)
         {
-         error = "riziko musí být v rozsahu 0..100 %";
+         error = StringFormat("riziko musí být v rozsahu 0..%.0f %%", PQE_MAX_RISK_PCT);
          return(false);
         }
       g_riskPercent = value;
@@ -609,7 +685,7 @@ void ParseRiskPresets()
       StringReplace(s, "%", "");
 
       double v = 0.0;
-      if(!ParseNumber(s, v) || v <= 0.0 || v > 100.0)
+      if(!ParseNumber(s, v) || v <= 0.0 || v > PQE_MAX_RISK_PCT)
         {
          if(s != "")
             Print("PQE: předvolba rizika '", parts[i], "' není platná, přeskočena.");
@@ -707,10 +783,11 @@ string FormError()
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
-//| Je obchodovani povoleno (terminal, expert, ucet, symbol)?        |
+//| Povoluje prostredi obchodovat? (terminal, expert, ucet)          |
 //|  reason - out: duvod zakazu                                      |
+//| Rezim symbolu se resi zvlast - lisi se pro otevirani a zavirani. |
 //+------------------------------------------------------------------+
-bool TradingAllowed(string &reason)
+bool TradingEnvAllowed(string &reason)
   {
    reason = "";
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
@@ -724,12 +801,41 @@ bool TradingAllowed(string &reason)
          else
             if(!AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
                reason = "účet nemá povoleno obchodovat experty";
-            else
-              {
-               const long mode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
-               if(mode == SYMBOL_TRADE_MODE_DISABLED || mode == SYMBOL_TRADE_MODE_CLOSEONLY)
-                  reason = "symbol nelze obchodovat (jen zavírání)";
-              }
+   return(reason == "");
+  }
+
+//+------------------------------------------------------------------+
+//| Lze otevrit novy obchod? (prostredi + symbol plne obchodovatelny)|
+//|  reason - out: duvod zakazu                                      |
+//+------------------------------------------------------------------+
+bool TradingAllowed(string &reason)
+  {
+   if(!TradingEnvAllowed(reason))
+      return(false);
+
+   const long mode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+   if(mode == SYMBOL_TRADE_MODE_DISABLED)
+      reason = "symbol nelze obchodovat";
+   else
+      if(mode == SYMBOL_TRADE_MODE_CLOSEONLY)
+         reason = "symbol je jen na zavírání";
+   return(reason == "");
+  }
+
+//+------------------------------------------------------------------+
+//| Lze zavirat pozice a rusit prikazy?                              |
+//|  reason - out: duvod zakazu                                      |
+//| Rezim SYMBOL_TRADE_MODE_CLOSEONLY zavirani naopak povoluje - je  |
+//| to jedine, co v nem broker dovoli, a expert ho tedy nesmi brat   |
+//| jako zakaz. Zakazane je zavirani jen u zcela vypnuteho symbolu.  |
+//+------------------------------------------------------------------+
+bool ClosingAllowed(string &reason)
+  {
+   if(!TradingEnvAllowed(reason))
+      return(false);
+
+   if(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED)
+      reason = "symbol nelze obchodovat";
    return(reason == "");
   }
 
@@ -826,6 +932,18 @@ double CalcLot(const double slDistance, string &reason)
    if(lotStep > 0.0)
       lot = MathFloor(lot / lotStep + PQE_LOTSTEP_EPS) * lotStep;
 
+   //--- Orez na maximum symbolu. VOLUME_MAX nemusi byt nasobkem kroku
+   //--- objemu, proto se po orezu zaokrouhluje znovu dolu - jinak by
+   //--- server prikaz odmitl s TRADE_RETCODE_INVALID_VOLUME.
+   if(maxLot > 0.0 && lot > maxLot)
+     {
+      lot = maxLot;
+      if(lotStep > 0.0)
+         lot = MathFloor(lot / lotStep + PQE_LOTSTEP_EPS) * lotStep;
+     }
+
+   //--- Kontrola minima az po orezu: u nesmyslne nastaveneho symbolu
+   //--- (VOLUME_MAX < VOLUME_MIN) by jinak prosel objem pod minimem
    if(lot < minLot)
      {
       reason = StringFormat("min. lot %s = %.2f %% > %.2f %%",
@@ -834,7 +952,6 @@ double CalcLot(const double slDistance, string &reason)
       return(0.0);
      }
 
-   lot = MathMin(lot, maxLot);
    return(NormalizeDouble(lot, VolumeDigits()));
   }
 
@@ -919,10 +1036,21 @@ void BuildPlan(const bool isBuy, const bool stopOnly, double price, SEntryPlan &
               }
      }
 
+   //--- U MARKET se vstup prepsal na Ask/Bid - i ten se zarovna, aby
+   //--- vzdalenosti nize vychazely ze stejne mrizky jako SL a PT
+   plan.entry = NormalizePrice(plan.entry);
+
    const double slDist = g_slPoints * _Point;
    const double tpDist = g_tpPoints * _Point;
    plan.sl = NormalizePrice(isBuy ? plan.entry - slDist : plan.entry + slDist);
    plan.tp = (tpDist > 0.0) ? NormalizePrice(isBuy ? plan.entry + tpDist : plan.entry - tpDist) : 0.0;
+
+   //--- Skutecne vzdalenosti po zarovnani na krok kotace. Kdyz je krok
+   //--- kotace vetsi nez bod (napr. indexove CFD s krokem 0.25 a bodem
+   //--- 0.01), lisi se od nominalnich hodnot z formulare - a rozhoduje
+   //--- ta skutecna, protoze ta se posila na server.
+   const double slReal = MathAbs(plan.entry - plan.sl);
+   const double tpReal = (plan.tp > 0.0) ? MathAbs(plan.tp - plan.entry) : 0.0;
 
    if(plan.mode == PQE_MODE_TOO_CLOSE)
      {
@@ -931,19 +1059,21 @@ void BuildPlan(const bool isBuy, const bool stopOnly, double price, SEntryPlan &
      }
 
    //--- SL a PT musi respektovat stop level brokera
-   if(slDist < stops)
+   if(slReal < stops)
      {
       plan.reason = StringFormat("SL < stop-level brokera (%.0f b)", stops / _Point);
       return;
      }
-   if(tpDist > 0.0 && tpDist < stops)
+   if(tpReal > 0.0 && tpReal < stops)
      {
       plan.reason = StringFormat("PT < stop-level brokera (%.0f b)", stops / _Point);
       return;
      }
 
+   //--- Objem se pocita ze skutecne vzdalenosti SL, ne z nominalni -
+   //--- jinak by realna ztrata na SL neodpovidala zadanemu procentu
    string lotReason;
-   plan.lots = CalcLot(slDist, lotReason);
+   plan.lots = CalcLot(slReal, lotReason);
    if(plan.lots <= 0.0)
      {
       plan.reason = lotReason;
@@ -1060,9 +1190,11 @@ bool ExecutePlan(SEntryPlan &plan)
    const ulong  ticket = g_trade.ResultOrder();
    const double price  = (market && g_trade.ResultPrice() > 0.0) ? g_trade.ResultPrice() : plan.entry;
 
-   // Vzdalenosti pro dorovnani SL/PT po vyplneni
-   const double slDist = g_slPoints * _Point;
-   const double tpDist = g_tpPoints * _Point;
+   // Vzdalenosti pro dorovnani SL/PT po vyplneni. Berou se z navrhu, ne
+   // z formulare - navrh uz ma ceny zarovnane na krok kotace a dorovnani
+   // musi vychazet ze stejnych hodnot, jake se poslaly na server.
+   const double slDist = MathAbs(plan.entry - plan.sl);
+   const double tpDist = (plan.tp > 0.0) ? MathAbs(plan.tp - plan.entry) : 0.0;
    RememberSent(ticket, slDist, tpDist);
 
    // Kratky tvar - radek panelu ma omezenou sirku
@@ -1153,9 +1285,15 @@ ulong OldestOurPosition()
 //+------------------------------------------------------------------+
 int ClosePositions(const bool onlyOldest, int &failed)
   {
-   const ulong oldest = onlyOldest ? OldestOurPosition() : 0;
-   if(onlyOldest && oldest == 0)
-      return(0);
+   //--- Jedina pozice: ticket uz je z OldestOurPosition znamy, cely
+   //--- seznam pozic se proto neprochazi podruhe
+   if(onlyOldest)
+     {
+      const ulong oldest = OldestOurPosition();
+      if(oldest == 0)
+         return(0);
+      return(CloseOnePosition(oldest, failed) ? 1 : 0);
+     }
 
    int closed = 0;
    //--- Od konce - seznam se zaviranim zkracuje
@@ -1164,18 +1302,26 @@ int ClosePositions(const bool onlyOldest, int &failed)
       const ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !IsOurPosition())
          continue;
-      if(onlyOldest && ticket != oldest)
-         continue;
-      if(RequestAccepted(g_trade.PositionClose(ticket)))
+      if(CloseOnePosition(ticket, failed))
          closed++;
-      else
-        {
-         failed++;
-         PrintFormat("PQE: pozici #%I64u se nepodařilo zavřít, retcode %d (%s)",
-                     ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
-        }
      }
    return(closed);
+  }
+
+//+------------------------------------------------------------------+
+//| Zavre jednu pozici za trh.                                       |
+//|  ticket - ticket pozice, failed - in/out: pocet neuspechu        |
+//| Vraci true pri uspechu, neuspech jde do logu.                    |
+//+------------------------------------------------------------------+
+bool CloseOnePosition(const ulong ticket, int &failed)
+  {
+   if(RequestAccepted(g_trade.PositionClose(ticket)))
+      return(true);
+
+   failed++;
+   PrintFormat("PQE: pozici #%I64u se nepodařilo zavřít, retcode %d (%s)",
+               ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+   return(false);
   }
 
 //+------------------------------------------------------------------+
@@ -1214,7 +1360,9 @@ int CancelOrders(int &failed)
 void OnCloseButton(const ENUM_PQE_CLOSE kind)
   {
    string reason;
-   if(!TradingAllowed(reason))
+   //--- Zavirani ma vlastni kontrolu: v rezimu "jen zavirani" je otevirani
+   //--- zakazane, ale zavrit pozici je prave to jedine, co jeste jde
+   if(!ClosingAllowed(reason))
       g_lastEvent = "zavřít nelze: " + reason;
    else
      {
@@ -1339,6 +1487,22 @@ void HandleChartClick(const int x, const int y)
    if(!ChartXYToTimePrice(0, x, y, sub, time, price) || sub != 0)
       return;
 
+   //--- Od stisku tlacitka mohla uplynout dlouha doba a podminky se mohly
+   //--- zmenit (vypnuty Algo Trading, odebrane povoleni). Kontrola se
+   //--- proto opakuje tesne pred odeslanim - jinak by misto srozumitelne
+   //--- hlasky prisel jen holy retcode od serveru.
+   string err = FormError();
+   if(err != "" || !TradingAllowed(err))
+     {
+      const string message = ArmName(g_armed) + ": " + err;
+      Disarm("");
+      g_lastEvent = message;
+      Print("PQE: ", g_lastEvent);
+      UpdatePanel();
+      ChartRedraw();
+      return;
+     }
+
    SEntryPlan plan;
    BuildPlan(ArmIsBuy(g_armed), ArmIsStopOnly(g_armed), price, plan);
    if(!plan.valid)
@@ -1377,8 +1541,13 @@ void UpdatePreview()
    if(IsInsidePanel(g_mouseX, g_mouseY) ||
       !ChartXYToTimePrice(0, g_mouseX, g_mouseY, sub, time, price) || sub != 0)
      {
-      DeletePreview();
-      ChartRedraw();
+      //--- Mazat a prekreslovat jen tehdy, kdyz nahled opravdu v grafu je -
+      //--- pri kurzoru nad panelem sem jinak chodi kazdy tick nadarmo
+      if(g_pvShown)
+        {
+         DeletePreview();
+         ChartRedraw();
+        }
       return;
      }
 
@@ -1388,6 +1557,25 @@ void UpdatePreview()
    const string dir      = plan.isBuy ? "BUY" : "SELL";
    const color  dirColor = plan.isBuy ? InpColorBuy : InpColorSell;
    const color  lineClr  = plan.valid ? dirColor : PQE_COLOR_OFF;
+
+   string text;
+   if(!plan.valid)
+      text = dir + ": " + plan.reason;
+   else
+      text = StringFormat("%s %s @ %s  SL %s  PT %s  %s lot",
+                          dir, ModeName(plan.mode),
+                          DoubleToString(plan.entry, _Digits),
+                          DoubleToString(plan.sl, _Digits),
+                          plan.tp > 0.0 ? DoubleToString(plan.tp, _Digits) : "-",
+                          FormatLots(plan.lots));
+
+   //--- Nezmeneny nahled se nekresli znovu. OnTick chodi pri zpravach
+   //--- i mnohokrat za sekundu a prekresleni celeho grafu je drahe;
+   //--- popisek sleduje kurzor, takze do shody patri i jeho poloha.
+   if(g_pvShown && text == g_pvText && g_mouseX == g_pvX && g_mouseY == g_pvY &&
+      SamePrice(plan.entry, g_pvEntry) && SamePrice(plan.sl, g_pvSL) &&
+      SamePrice(plan.tp, g_pvTP))
+      return;
 
    //--- Styl linky rika, jaky prikaz klik zada: plna = MARKET,
    //--- carkovana = STOP, cerchovana = LIMIT
@@ -1406,18 +1594,17 @@ void UpdatePreview()
    else
       ObjectDelete(0, PQE_OBJ_PV_TP);
 
-   string text;
-   if(!plan.valid)
-      text = dir + ": " + plan.reason;
-   else
-      text = StringFormat("%s %s @ %s  SL %s  PT %s  %s lot",
-                          dir, ModeName(plan.mode),
-                          DoubleToString(plan.entry, _Digits),
-                          DoubleToString(plan.sl, _Digits),
-                          plan.tp > 0.0 ? DoubleToString(plan.tp, _Digits) : "-",
-                          FormatLots(plan.lots));
-
    DrawLabel(PQE_OBJ_PV_LABEL, g_mouseX + Dpi(16), g_mouseY + Dpi(18), Fit(text), lineClr);
+
+   //--- Vykresleny stav pro porovnani pri dalsim volani
+   g_pvShown = true;
+   g_pvEntry = plan.entry;
+   g_pvSL    = plan.sl;
+   g_pvTP    = plan.tp;
+   g_pvText  = text;
+   g_pvX     = g_mouseX;
+   g_pvY     = g_mouseY;
+
    ChartRedraw();
   }
 
@@ -1428,6 +1615,10 @@ void DeletePreview()
    ObjectDelete(0, PQE_OBJ_PV_SL);
    ObjectDelete(0, PQE_OBJ_PV_TP);
    ObjectDelete(0, PQE_OBJ_PV_LABEL);
+
+   //--- Pamet vykresleneho nahledu uz neplati
+   g_pvShown = false;
+   g_pvText  = "";
   }
 
 //+------------------------------------------------------------------+
@@ -1446,38 +1637,60 @@ int Dpi(const double base)
    return((int)MathRound(base * g_dpiScale));
   }
 
-//--- Levy okraj panelu
-int PanelLeft()
+//+------------------------------------------------------------------+
+//| Spocte rozvrzeni panelu: polohu vsech radku i celkovou vysku.    |
+//|  lo - out: rozvrzeni                                             |
+//| Poradi shora: titulek, tri pole formulare, predvolby rizika, tri |
+//| rady tlacitek (BUY / SELL, BUYSTOP / SELLSTOP, zavirani) a       |
+//| stavove radky. Vyska vznika soucasne s polohami, takze pozadi    |
+//| panelu i IsInsidePanel vzdy odpovidaji tomu, co je vykreslene -  |
+//| pri pridani radku uz neni co udrzovat na dvou mistech.           |
+//| Pod zapnutym One Click Trading se cely panel posune nize.        |
+//+------------------------------------------------------------------+
+void BuildLayout(SPanelLayout &lo)
   {
-   return(Dpi(InpPanelX));
-  }
-
-//--- Horni okraj panelu; pod zapnutym One Click Trading se panel posune
-int PanelTop()
-  {
-   int y = Dpi(InpPanelY);
+   lo.left = Dpi(InpPanelX);
+   lo.top  = Dpi(InpPanelY);
    if(ChartGetInteger(0, CHART_SHOW_ONE_CLICK))
-      y += Dpi(InpPanelOneClickShift);
-   return(y);
-  }
+      lo.top += Dpi(InpPanelOneClickShift);
 
-//--- Celkova vyska panelu: titulek, 3 pole, predvolby rizika, tri radky
-//--- tlacitek (BUY / SELL, BUYSTOP / SELLSTOP, zavirani), stavove radky
-int PanelHeight()
-  {
-   return(Px(PQE_PANEL_PAD) + Px(PQE_ROW_H) * 4 +
-          Px(PQE_RISK_BTN_H) + Px(PQE_BTN_GAP) +
-          (Px(PQE_BTN_H) + Px(PQE_BTN_GAP)) * 3 +
-          PQE_STATUS_LINES * Px(PQE_STATUS_H) + Px(PQE_PANEL_PAD));
+   lo.width   = Px(PQE_PANEL_W);
+   lo.pad     = Px(PQE_PANEL_PAD);
+   lo.gap     = Px(PQE_BTN_GAP);
+   lo.btnH    = Px(PQE_BTN_H);
+   lo.statusH = Px(PQE_STATUS_H);
+
+   const int rowH = Px(PQE_ROW_H);
+   int y = lo.top + lo.pad;
+
+   lo.yTitle = y;
+   y += rowH;
+   for(int i = 0; i < PQE_FORM_FIELDS; i++)
+     {
+      lo.yFields[i] = y;
+      y += rowH;
+     }
+   lo.yRisk = y;
+   y += Px(PQE_RISK_BTN_H) + lo.gap;
+   lo.yBuySell = y;
+   y += lo.btnH + lo.gap;
+   lo.yStops = y;
+   y += lo.btnH + lo.gap;
+   lo.yClose = y;
+   y += lo.btnH + lo.gap;
+   lo.yStatus = y;
+   y += PQE_STATUS_LINES * lo.statusH;
+
+   lo.height = y + lo.pad - lo.top;
   }
 
 //--- Lezi bod (v pixelech) uvnitr panelu?
 bool IsInsidePanel(const int x, const int y)
   {
-   const int left = PanelLeft();
-   const int top  = PanelTop();
-   return(x >= left && x <= left + Px(PQE_PANEL_W) &&
-          y >= top && y <= top + PanelHeight());
+   SPanelLayout lo;
+   BuildLayout(lo);
+   return(x >= lo.left && x <= lo.left + lo.width &&
+          y >= lo.top  && y <= lo.top + lo.height);
   }
 
 //--- Razitko buildu = datum a cas kompilace (__DATETIME__ je typu datetime)
@@ -1512,119 +1725,134 @@ string Fit(const string text, const int maxChars = PQE_MAX_CHARS)
 //+------------------------------------------------------------------+
 void UpdatePanel()
   {
-   const int left  = PanelLeft();
-   const int top   = PanelTop();
-   const int pad   = Px(PQE_PANEL_PAD);
-   const int rowH  = Px(PQE_ROW_H);
-   const int btnH  = Px(PQE_BTN_H);
-   const int gap   = Px(PQE_BTN_GAP);
-   const int width = Px(PQE_PANEL_W);
-   int y = top + pad;
+   SPanelLayout lo;
+   BuildLayout(lo);
 
-   DrawRect(PQE_OBJ_BG, left, top, width, PanelHeight());
+   //--- Stav trhu a formulare se zjisti jednou a sdileji ho stavove
+   //--- radky i vsechna tlacitka
+   SPanelState st;
+   BuildPanelState(st);
+
+   const int x     = lo.left + lo.pad;        // levy okraj obsahu panelu
+   const int inner = lo.width - 2 * lo.pad;   // sirka obsahu panelu
+
+   DrawRect(PQE_OBJ_BG, lo.left, lo.top, lo.width, lo.height);
 
    //--- Titulek s aktualni cenou
    const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   DrawLabel(PQE_OBJ_TITLE, left + pad, y + Px(3),
+   DrawLabel(PQE_OBJ_TITLE, x, lo.yTitle + Px(3),
              Fit(StringFormat("VSTUP %s  Ask %s  Bid %s", _Symbol,
                               DoubleToString(ask, _Digits), DoubleToString(bid, _Digits)),
                  PanelMaxChars()),
              InpColorText);
    // Bublina titulku prozradi, ktery build v grafu opravdu bezi
-   ObjectSetString(0, PQE_OBJ_TITLE, OBJPROP_TOOLTIP,
-                   "Puntiky Quick Entry - build " + BuildStamp());
-   y += rowH;
+   SetObjText(PQE_OBJ_TITLE, OBJPROP_TOOLTIP,
+              "Puntiky Quick Entry - build " + BuildStamp());
 
    //--- Formular: popisek + editacni pole na kazdem radku (symbol se
    //--- bere z grafu a je v titulku)
-   DrawFormRow(PQE_OBJ_EDIT_SL,     "SL (body)",  y, IntegerToString(g_slPoints),
+   DrawFormRow(PQE_OBJ_EDIT_SL,   "SL (body)",  x, lo.yFields[0],
+               IntegerToString(g_slPoints),
                "Stop loss v bodech od vstupní ceny");
-   y += rowH;
-   DrawFormRow(PQE_OBJ_EDIT_TP,     "PT (body)",  y, IntegerToString(g_tpPoints),
+   DrawFormRow(PQE_OBJ_EDIT_TP,   "PT (body)",  x, lo.yFields[1],
+               IntegerToString(g_tpPoints),
                "Profit target v bodech od vstupní ceny (0 = bez PT)");
-   y += rowH;
-   DrawFormRow(PQE_OBJ_EDIT_RISK,   "Riziko (%)", y, DoubleToString(g_riskPercent, 2),
+   DrawFormRow(PQE_OBJ_EDIT_RISK, "Riziko (%)", x, lo.yFields[2],
+               DoubleToString(g_riskPercent, 2),
                "Riziko na obchod v procentech zůstatku účtu");
-   y += rowH;
 
    //--- Predvolby rizika (vybrana je zvyraznena)
-   DrawRiskButtons(left + pad, y, width - 2 * pad);
-   y += Px(PQE_RISK_BTN_H) + gap;
+   DrawRiskButtons(x, lo.yRisk, inner);
 
    //--- Hlavni tlacitka BUY / SELL vedle sebe (STOP, LIMIT nebo MARKET)
-   const int btnW = (width - 2 * pad - gap) / 2;
-   DrawDirectionButton(PQE_OBJ_BTN_BUY,  true,  false, left + pad, y, btnW);
-   DrawDirectionButton(PQE_OBJ_BTN_SELL, false, false, left + pad + btnW + gap, y, btnW);
-   y += btnH + gap;
+   const int btnW = (inner - lo.gap) / 2;
+   DrawDirectionButton(PQE_OBJ_BTN_BUY,  true,  false, x, lo.yBuySell, btnW, lo.btnH, st);
+   DrawDirectionButton(PQE_OBJ_BTN_SELL, false, false, x + btnW + lo.gap, lo.yBuySell,
+                       btnW, lo.btnH, st);
 
    //--- Pod nimi BUYSTOP / SELLSTOP (jen STOP nebo MARKET), stejne siroka
-   DrawDirectionButton(PQE_OBJ_BTN_STOP_BUY,  true,  true, left + pad, y, btnW);
-   DrawDirectionButton(PQE_OBJ_BTN_STOP_SELL, false, true, left + pad + btnW + gap, y, btnW);
-   y += btnH + gap;
+   DrawDirectionButton(PQE_OBJ_BTN_STOP_BUY,  true,  true, x, lo.yStops, btnW, lo.btnH, st);
+   DrawDirectionButton(PQE_OBJ_BTN_STOP_SELL, false, true, x + btnW + lo.gap, lo.yStops,
+                       btnW, lo.btnH, st);
 
    //--- Rada tlacitek zavirani: ZRUSIT PRIKAZY / ZAVRIT 1 / ZAVRIT VSE
-   DrawCloseButtons(left + pad, y, width - 2 * pad);
-   y += btnH + gap;
+   DrawCloseButtons(x, lo.yClose, inner, lo.btnH, st);
 
    //--- Stavove radky
    string lines[PQE_STATUS_LINES];
-   BuildStatusLines(lines);
+   BuildStatusLines(lines, st);
+   int y = lo.yStatus;
    for(int i = 0; i < PQE_STATUS_LINES; i++)
      {
-      DrawLabel(PQE_OBJ_STATUS + IntegerToString(i), left + pad, y,
+      DrawLabel(PQE_OBJ_STATUS + IntegerToString(i), x, y,
                 Fit(lines[i], PanelMaxChars()), InpColorText);
-      y += Px(PQE_STATUS_H);
+      y += lo.statusH;
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Zjisti vse, co panel pri prekresleni potrebuje.                  |
+//|  st - out: stav trhu a formulare                                 |
+//| Pocty prikazu a pozic, povoleni obchodu i objem z rizika se ctou |
+//| jednou za prekresleni. Drive si je stavove radky a kazde tlacitko|
+//| zjistovaly zvlast, takze se cely seznam prikazu i pozic prochazel|
+//| nekolikrat za sekundu.                                           |
+//+------------------------------------------------------------------+
+void BuildPanelState(SPanelState &st)
+  {
+   st.orders    = CountOurOrders();
+   st.positions = CountOurPositions();
+   st.formError = FormError();
+   st.canTrade  = TradingAllowed(st.tradeReason);
+   st.canClose  = ClosingAllowed(st.closeReason);
+   st.balance   = AccountInfoDouble(ACCOUNT_BALANCE);
+   st.slDist    = g_slPoints * _Point;
+   st.lots      = CalcLot(st.slDist, st.lotReason);
   }
 
 //+------------------------------------------------------------------+
 //| Sestavi texty stavovych radku panelu.                            |
 //|  lines - out: pole radku (PQE_STATUS_LINES polozek)              |
+//|  st    - stav spocteny pro toto prekresleni                      |
 //+------------------------------------------------------------------+
-void BuildStatusLines(string &lines[])
+void BuildStatusLines(string &lines[], const SPanelState &st)
   {
    //--- Stav: co se prave deje, nebo proc nejde obchodovat
-   string reason;
    // Kratky tvar - i "stav: SELLSTOP - ..." se musi vejit na radek panelu
    if(g_armed != PQE_ARM_NONE)
       lines[0] = "stav: " + ArmName(g_armed) + " - klikni do grafu (Esc)";
    else
-      if(FormError() != "")
-         lines[0] = "stav: " + FormError();
+      if(st.formError != "")
+         lines[0] = "stav: " + st.formError;
       else
-         if(!TradingAllowed(reason))
-            lines[0] = "stav: " + reason;
+         if(!st.canTrade)
+            lines[0] = "stav: " + st.tradeReason;
          else
             lines[0] = "stav: připraven - stiskni BUY nebo SELL";
 
    //--- Objem z rizika pro aktualni SL a zustatek (texty jsou kratke,
    //--- radek panelu ma jen PanelMaxChars znaku)
-   const double slDist = g_slPoints * _Point;
-   string lotReason;
-   const double lots = CalcLot(slDist, lotReason);
-   if(lots > 0.0)
+   if(st.lots > 0.0)
      {
-      const double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-      const double risk    = lots * LossPerLot(slDist);
+      const double risk = st.lots * LossPerLot(st.slDist);
       lines[1] = StringFormat("objem %s lot = %.2f %s (%.2f %%)",
-                              FormatLots(lots), risk, AccountInfoString(ACCOUNT_CURRENCY),
-                              balance > 0.0 ? risk / balance * 100.0 : 0.0);
+                              FormatLots(st.lots), risk, AccountInfoString(ACCOUNT_CURRENCY),
+                              st.balance > 0.0 ? risk / st.balance * 100.0 : 0.0);
      }
    else
-      lines[1] = "objem: " + lotReason;
+      lines[1] = "objem: " + st.lotReason;
 
    //--- Vzdalenosti SL a PT prevedene na cenu
    lines[2] = StringFormat("SL %d b = %s   PT %s",
-                           g_slPoints, DoubleToString(slDist, _Digits),
+                           g_slPoints, DoubleToString(st.slDist, _Digits),
                            g_tpPoints > 0
                            ? StringFormat("%d b = %s", g_tpPoints, DoubleToString(g_tpPoints * _Point, _Digits))
                            : "bez PT");
 
    //--- Co uz na trhu lezi
    lines[3] = StringFormat("příkazy %d  pozice %d  zůstatek %.2f",
-                           CountOurOrders(), CountOurPositions(),
-                           AccountInfoDouble(ACCOUNT_BALANCE));
+                           st.orders, st.positions, st.balance);
 
    lines[4] = "» " + g_lastEvent;
   }
@@ -1633,17 +1861,16 @@ void BuildStatusLines(string &lines[])
 //| Vykresli radek formulare: popisek vlevo, editacni pole vpravo.   |
 //|  name    - jmeno editacniho pole                                 |
 //|  label   - popisek pole                                          |
-//|  y       - horni okraj radku v pixelech                          |
+//|  x, y    - levy horni roh radku v pixelech                       |
 //|  initial - vychozi text pole (jen pri vzniku, uzivateli se       |
 //|            rozepsany text neprepisuje)                           |
 //|  tooltip - bublina pole                                          |
 //+------------------------------------------------------------------+
-void DrawFormRow(const string name, const string label, const int y,
+void DrawFormRow(const string name, const string label, const int x, const int y,
                  const string initial, const string tooltip)
   {
-   const int left = PanelLeft() + Px(PQE_PANEL_PAD);
-   DrawLabel(name + "_LBL", left, y + Px(3), label, InpColorText);
-   DrawEdit(name, left + Px(PQE_LABEL_W), y, Px(PQE_EDIT_W), Px(PQE_EDIT_H), initial, tooltip);
+   DrawLabel(name + "_LBL", x, y + Px(3), label, InpColorText);
+   DrawEdit(name, x + Px(PQE_LABEL_W), y, Px(PQE_EDIT_W), Px(PQE_EDIT_H), initial, tooltip);
   }
 
 //+------------------------------------------------------------------+
@@ -1654,10 +1881,12 @@ void DrawFormRow(const string name, const string label, const int y,
 //| aby se vesel i text "ZRUSIT SELLSTOP".                           |
 //|  name - jmeno objektu, isBuy - smer                              |
 //|  stopOnly - varianta BUYSTOP / SELLSTOP                          |
-//|  x, y - poloha, w - sirka v pixelech                             |
+//|  x, y - poloha, w, h - rozmery v pixelech                        |
+//|  st - stav spocteny pro toto prekresleni                         |
 //+------------------------------------------------------------------+
 void DrawDirectionButton(const string name, const bool isBuy, const bool stopOnly,
-                         const int x, const int y, const int w)
+                         const int x, const int y, const int w, const int h,
+                         const SPanelState &st)
   {
    const ENUM_PQE_ARM armDir = ArmOf(isBuy, stopOnly);
    const string dir   = ArmName(armDir);
@@ -1666,7 +1895,6 @@ void DrawDirectionButton(const string name, const bool isBuy, const bool stopOnl
    string tooltip = "";
    color  bg      = stopOnly ? (isBuy ? PQE_COLOR_BTN_STOP_BUY : PQE_COLOR_BTN_STOP_SELL)
                              : (isBuy ? PQE_COLOR_BTN_BUY : PQE_COLOR_BTN_SELL);
-   string reason  = FormError();
 
    if(g_armed == armDir)
      {
@@ -1675,10 +1903,11 @@ void DrawDirectionButton(const string name, const bool isBuy, const bool stopOnl
       tooltip = "Zruší výběr místa vstupu.";
      }
    else
-      if(reason != "" || !TradingAllowed(reason))
+      if(st.formError != "" || !st.canTrade)
         {
          bg      = PQE_COLOR_BTN_OFF;
-         tooltip = "Nelze obchodovat: " + reason;
+         tooltip = "Nelze obchodovat: " +
+                   (st.formError != "" ? st.formError : st.tradeReason);
         }
       else
          if(stopOnly)
@@ -1690,7 +1919,7 @@ void DrawDirectionButton(const string name, const bool isBuy, const bool stopOnl
                       ? "Klik nad Ask = BUY STOP, klik pod Ask = BUY LIMIT, klik těsně pod Ask (do stop-levelu) = BUY za trh."
                       : "Klik pod Bid = SELL STOP, klik nad Bid = SELL LIMIT, klik těsně nad Bid (do stop-levelu) = SELL za trh.";
 
-   DrawButton(name, x, y, w, Px(PQE_BTN_H), text, bg, tooltip,
+   DrawButton(name, x, y, w, h, text, bg, tooltip,
               stopOnly ? PQE_BTN_FONT_PLUS_SMALL : PQE_BTN_FONT_PLUS);
   }
 
@@ -1700,18 +1929,18 @@ void DrawDirectionButton(const string name, const bool isBuy, const bool stopOnl
 //|                   (pozice necha)                                 |
 //|  ZAVRIT 1       - zavre jednu (nejstarsi) pozici za trh          |
 //|  ZAVRIT VSE     - zavre vsechny pozice a zrusi vsechny prikazy   |
-//| Tlacitko, pro ktere na trhu nic neni, zesedne a duvod ma v       |
-//| bubline. Pocty jsou i na stavovem radku "prikazy / pozice".      |
-//| Sirky tlacitek jsou podle delky popisku, aby se vesel i nejdelsi |
-//| "ZRUSIT PRIKAZY".                                                |
+//| Tlacitko, pro ktere na trhu nic neni nebo ktere nelze pouzit,    |
+//| zesedne a duvod ma v bubline. Pocty jsou i na stavovem radku     |
+//| "prikazy / pozice". Sirky tlacitek jsou podle delky popisku, aby |
+//| se vesel i nejdelsi "ZRUSIT PRIKAZY".                            |
 //|  x, y - poloha rady, w - celkova sirka rady v pixelech           |
+//|  btnH - vyska tlacitek                                           |
+//|  st   - stav spocteny pro toto prekresleni                       |
 //+------------------------------------------------------------------+
-void DrawCloseButtons(const int x, const int y, const int w)
+void DrawCloseButtons(const int x, const int y, const int w, const int btnH,
+                      const SPanelState &st)
   {
-   const int orders    = CountOurOrders();
-   const int positions = CountOurPositions();
-   const int gap       = Px(PQE_BTN_GAP);
-   const int btnH      = Px(PQE_BTN_H);
+   const int gap = Px(PQE_BTN_GAP);
 
    //--- Rozdeleni sirky: nejdelsi popisek dostane nejvic, posledni
    //--- tlacitko zbytek, aby rada koncila zarovnane
@@ -1720,26 +1949,36 @@ void DrawCloseButtons(const int x, const int y, const int w)
    const int oneW    = (int)MathRound(inner * PQE_CLOSE_SHARE_ONE);
    const int allW    = inner - cancelW - oneW;
 
+   //--- Kdyz zavirat nejde vubec, zesednou vsechna tri tlacitka a duvod
+   //--- je v bubline - drive vypadala aktivne a klik jen tise nic neudelal
+   const string blocked = st.canClose ? "" : "Nelze zavírat: " + st.closeReason;
+
+   string tip = blocked;
+   if(tip == "")
+      tip = st.orders > 0
+            ? StringFormat("Zruší všechny čekající příkazy experta (STOP i LIMIT, celkem %d), pozice nechá.", st.orders)
+            : "Žádný čekající příkaz experta.";
    DrawButton(PQE_OBJ_BTN_CANCEL_ORDERS, x, y, cancelW, btnH, "ZRUŠIT PŘÍKAZY",
-              orders > 0 ? PQE_COLOR_BTN_CANCEL_ORD : PQE_COLOR_BTN_OFF,
-              orders > 0
-              ? StringFormat("Zruší všechny čekající příkazy experta (STOP i LIMIT, celkem %d), pozice nechá.", orders)
-              : "Žádný čekající příkaz experta.",
-              PQE_BTN_FONT_PLUS_SMALL);
+              (st.canClose && st.orders > 0) ? PQE_COLOR_BTN_CANCEL_ORD : PQE_COLOR_BTN_OFF,
+              tip, PQE_BTN_FONT_PLUS_SMALL);
 
+   tip = blocked;
+   if(tip == "")
+      tip = st.positions > 0
+            ? StringFormat("Zavře jednu (nejstarší) pozici experta za trh, otevřeno: %d.", st.positions)
+            : "Žádná otevřená pozice experta.";
    DrawButton(PQE_OBJ_BTN_CLOSE_ONE, x + cancelW + gap, y, oneW, btnH, "ZAVŘÍT 1",
-              positions > 0 ? PQE_COLOR_BTN_CLOSE_ONE : PQE_COLOR_BTN_OFF,
-              positions > 0
-              ? StringFormat("Zavře jednu (nejstarší) pozici experta za trh, otevřeno: %d.", positions)
-              : "Žádná otevřená pozice experta.",
-              PQE_BTN_FONT_PLUS_SMALL);
+              (st.canClose && st.positions > 0) ? PQE_COLOR_BTN_CLOSE_ONE : PQE_COLOR_BTN_OFF,
+              tip, PQE_BTN_FONT_PLUS_SMALL);
 
+   tip = blocked;
+   if(tip == "")
+      tip = (st.orders + st.positions) > 0
+            ? StringFormat("Zavře všechny pozice experta (%d) a zruší jeho čekající příkazy (%d).", st.positions, st.orders)
+            : "Expert nemá na trhu pozici ani příkaz.";
    DrawButton(PQE_OBJ_BTN_CLOSE_ALL, x + cancelW + gap + oneW + gap, y, allW, btnH, "ZAVŘÍT VŠE",
-              orders + positions > 0 ? PQE_COLOR_BTN_CLOSE : PQE_COLOR_BTN_OFF,
-              orders + positions > 0
-              ? StringFormat("Zavře všechny pozice experta (%d) a zruší jeho čekající příkazy (%d).", positions, orders)
-              : "Expert nemá na trhu pozici ani příkaz.",
-              PQE_BTN_FONT_PLUS_SMALL);
+              (st.canClose && (st.orders + st.positions) > 0) ? PQE_COLOR_BTN_CLOSE : PQE_COLOR_BTN_OFF,
+              tip, PQE_BTN_FONT_PLUS_SMALL);
   }
 
 //+------------------------------------------------------------------+
@@ -1779,6 +2018,35 @@ void DrawRiskButtons(const int x, const int y, const int w)
 //+------------------------------------------------------------------+
 
 //+------------------------------------------------------------------+
+//| Zapis vlastnosti objektu jen pri zmene.                          |
+//|  name - jmeno objektu, prop - vlastnost, value - hodnota         |
+//| Panel se prekresluje kazdou sekundu a kazdy ObjectSet* je volani |
+//| do terminalu. U OBJ_EDIT navic zbytecny zapis muze zahodit text, |
+//| ktery uzivatel prave pise.                                       |
+//+------------------------------------------------------------------+
+void SetObjLong(const string name, const ENUM_OBJECT_PROPERTY_INTEGER prop, const long value)
+  {
+   if(ObjectGetInteger(0, name, prop) != value)
+      ObjectSetInteger(0, name, prop, value);
+  }
+
+//--- Textova vlastnost objektu, zapis jen pri zmene
+void SetObjText(const string name, const ENUM_OBJECT_PROPERTY_STRING prop, const string value)
+  {
+   if(ObjectGetString(0, name, prop) != value)
+      ObjectSetString(0, name, prop, value);
+  }
+
+//--- Poloha a rozmery objektu (px), zapis jen pri zmene
+void SetObjGeometry(const string name, const int x, const int y, const int w, const int h)
+  {
+   SetObjLong(name, OBJPROP_XDISTANCE, x);
+   SetObjLong(name, OBJPROP_YDISTANCE, y);
+   SetObjLong(name, OBJPROP_XSIZE, w);
+   SetObjLong(name, OBJPROP_YSIZE, h);
+  }
+
+//+------------------------------------------------------------------+
 //| Obdelnik pozadi panelu.                                          |
 //|  name - jmeno objektu, x, y - poloha, w, h - rozmery (px)        |
 //+------------------------------------------------------------------+
@@ -1797,10 +2065,7 @@ void DrawRect(const string name, const int x, const int y, const int w, const in
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
       ObjectSetInteger(0, name, OBJPROP_ZORDER, PQE_ZORDER_PANEL);
      }
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   SetObjGeometry(name, x, y, w, h);
   }
 
 //+------------------------------------------------------------------+
@@ -1822,12 +2087,10 @@ void DrawLabel(const string name, const int x, const int y, const string text, c
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
      }
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   if(ObjectGetString(0, name, OBJPROP_TEXT) != text)
-      ObjectSetString(0, name, OBJPROP_TEXT, text);
-   if((color)ObjectGetInteger(0, name, OBJPROP_COLOR) != clr)
-      ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   SetObjLong(name, OBJPROP_XDISTANCE, x);
+   SetObjLong(name, OBJPROP_YDISTANCE, y);
+   SetObjText(name, OBJPROP_TEXT, text);
+   SetObjLong(name, OBJPROP_COLOR, (long)clr);
   }
 
 //+------------------------------------------------------------------+
@@ -1856,10 +2119,7 @@ void DrawEdit(const string name, const int x, const int y, const int w, const in
       ObjectSetString(0, name, OBJPROP_TEXT, initial);
       ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
      }
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
+   SetObjGeometry(name, x, y, w, h);
   }
 
 //+------------------------------------------------------------------+
@@ -1888,16 +2148,10 @@ void DrawButton(const string name, const int x, const int y, const int w, const 
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
       ObjectSetInteger(0, name, OBJPROP_ZORDER, PQE_ZORDER_CONTROL);
      }
-   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, name, OBJPROP_XSIZE, w);
-   ObjectSetInteger(0, name, OBJPROP_YSIZE, h);
-   if(ObjectGetString(0, name, OBJPROP_TEXT) != text)
-      ObjectSetString(0, name, OBJPROP_TEXT, text);
-   if((color)ObjectGetInteger(0, name, OBJPROP_BGCOLOR) != bg)
-      ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
-   if(ObjectGetString(0, name, OBJPROP_TOOLTIP) != tooltip)
-      ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
+   SetObjGeometry(name, x, y, w, h);
+   SetObjText(name, OBJPROP_TEXT, text);
+   SetObjLong(name, OBJPROP_BGCOLOR, (long)bg);
+   SetObjText(name, OBJPROP_TOOLTIP, tooltip);
   }
 
 //+------------------------------------------------------------------+
@@ -1915,9 +2169,12 @@ void DrawHLine(const string name, const double price, const color clr,
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
      }
-   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
-   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
-   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
-   ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+   //--- Nahled jede za mysi a prekresluje se casto - zapisuje se jen to,
+   //--- co se opravdu zmenilo
+   if(ObjectGetDouble(0, name, OBJPROP_PRICE) != price)
+      ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   SetObjLong(name, OBJPROP_COLOR, (long)clr);
+   SetObjLong(name, OBJPROP_STYLE, (long)style);
+   SetObjLong(name, OBJPROP_WIDTH, width);
   }
 //+------------------------------------------------------------------+

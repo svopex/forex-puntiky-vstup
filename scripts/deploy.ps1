@@ -65,12 +65,29 @@ $editor = Join-Path $installPath "MetaEditor64.exe"
 if (-not (Test-Path $editor)) { throw "MetaEditor64.exe nenalezen v $installPath" }
 
 $source = Join-Path $dstExperts "$expertName.mq5"
+$ex5    = Join-Path $dstExperts "$expertName.ex5"
 $log    = Join-Path $env:TEMP "$expertName`_compile.log"
 if (Test-Path $log) { Remove-Item $log -Force }
 
-Start-Process -FilePath $editor `
-              -ArgumentList "/compile:`"$source`"", "/log:`"$log`"" `
-              -Wait -NoNewWindow
+# Stary .ex5 se pred kompilaci smaze. Kdyz kompilace selze, MetaEditor
+# predchozi binarku necha na miste - pouha existence souboru tedy o
+# uspechu nic nerika a skript by nasazeni ohlasil, i kdyz by v terminalu
+# dal bezela stara verze. Kdyz soubor smazat nejde (drzi ho bezici
+# terminal), pozna se novy prekladem podle casu posledni zmeny.
+$ex5Before = $null
+if (Test-Path $ex5) {
+    $ex5Before = (Get-Item $ex5).LastWriteTimeUtc
+    try {
+        Remove-Item $ex5 -Force -ErrorAction Stop
+        $ex5Before = $null
+    } catch {
+        Write-Output "Stary .ex5 nelze smazat ($($_.Exception.Message)) - uspech se pozna podle casu zmeny."
+    }
+}
+
+$proc = Start-Process -FilePath $editor `
+                      -ArgumentList "/compile:`"$source`"", "/log:`"$log`"" `
+                      -Wait -NoNewWindow -PassThru
 
 # Z logu se vypisou jen chyby, varovani a souhrnny radek
 if (Test-Path $log) {
@@ -81,12 +98,16 @@ if (Test-Path $log) {
     Write-Output "Log kompilace nebyl vytvoren."
 }
 
-$ex5 = Join-Path $dstExperts "$expertName.ex5"
-if (Test-Path $ex5) {
-    Write-Output "Hotovo: $ex5"
-} else {
-    throw "Kompilace selhala - .ex5 nebyl vytvoren."
+# Uspech = vznikla nova binarka. Navratovy kod MetaEditoru se na to pouzit
+# neda - vraci 1 i po prekladu bez jedine chyby a varovani, takze by z nej
+# kontrola delala neuspech z kazdeho nasazeni. Do hlasky o chybe se dava
+# jen jako doplnujici udaj.
+$ex5New = (Test-Path $ex5) -and
+          (($null -eq $ex5Before) -or ((Get-Item $ex5).LastWriteTimeUtc -gt $ex5Before))
+if (-not $ex5New) {
+    throw "Kompilace selhala - novy .ex5 nevznikl (MetaEditor skoncil s kodem $($proc.ExitCode)). Podrobnosti v $log."
 }
+Write-Output "Hotovo: $ex5"
 
 # Uklid: drivejsi verze se nasazovaly do slozky pojmenovane podle experta
 # (MQL5\Experts\PuntikyQuickEntry). Stara kopie by v Navigatoru zustala jako
