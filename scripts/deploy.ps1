@@ -2,7 +2,7 @@
 #
 # Skript zkopiruje zdrojovy soubor z repozitare do datoveho adresare
 # terminalu a nasledne ho zkompiluje pres MetaEditor. Po uspesne kompilaci
-# staci v terminalu v Navigatoru (Experts -> PuntikyQuickEntry) experta
+# staci v terminalu v Navigatoru (Experts -> Puntiky -> PuntikyQuickEntry) experta
 # pretahnout na graf XAUUSD - pri bezicim terminalu se novy .ex5 objevi
 # v Navigatoru sam, pripadne po pravem kliku -> Obnovit.
 #
@@ -20,9 +20,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Nazev souboru experta (.mq5 / .ex5) a slozky, do ktere se nasazuje -
+# slozka je kratsi "Puntiky", expert je v Navigatoru pod Experts -> Puntiky
 $expertName = "PuntikyQuickEntry"
+$expertDir  = "Puntiky"
 $repoRoot   = Split-Path -Parent $PSScriptRoot
-$srcExperts = Join-Path $repoRoot "MQL5\Experts\$expertName"
+$srcExperts = Join-Path $repoRoot "MQL5\Experts\$expertDir"
 
 # Najde instalacni adresar terminalu podle nazvu brokera
 $install = Get-ChildItem "C:\Program Files" -Directory |
@@ -50,7 +53,7 @@ Write-Output "Terminal:  $installPath"
 Write-Output "Data:      $termRoot"
 
 # Kopie zdrojovych souboru do datoveho adresare terminalu
-$dstExperts = Join-Path $termRoot "MQL5\Experts\$expertName"
+$dstExperts = Join-Path $termRoot "MQL5\Experts\$expertDir"
 New-Item -ItemType Directory -Force -Path $dstExperts | Out-Null
 Copy-Item (Join-Path $srcExperts "*.mq5") $dstExperts -Force
 Write-Output "Zkopirovano do $dstExperts"
@@ -85,6 +88,21 @@ if (Test-Path $ex5) {
     throw "Kompilace selhala - .ex5 nebyl vytvoren."
 }
 
+# Uklid: drivejsi verze se nasazovaly do slozky pojmenovane podle experta
+# (MQL5\Experts\PuntikyQuickEntry). Stara kopie by v Navigatoru zustala jako
+# druhy expert, proto se smaze. Kdyz ji bezici terminal drzi, jen se upozorni.
+$oldExperts = Join-Path $termRoot "MQL5\Experts\$expertName"
+$oldRemoved = $false
+if (($oldExperts -ne $dstExperts) -and (Test-Path $oldExperts)) {
+    try {
+        Remove-Item $oldExperts -Recurse -Force -ErrorAction Stop
+        Write-Output "Smazana stara slozka $oldExperts"
+        $oldRemoved = $true
+    } catch {
+        Write-Output "POZOR: starou slozku $oldExperts se nepodarilo smazat ($($_.Exception.Message)) - smaz ji rucne."
+    }
+}
+
 # Bezici terminal experta po kompilaci obvykle sam znovu nacte, ale ne vzdy
 # (napr. kdyz expert zrovna obchoduje) - v grafu pak dal bezi stara verze.
 # Kontrola: v Expert logu se ma objevit radek "PQE: rychly vstup spusten ...
@@ -93,6 +111,12 @@ $running = Get-Process -Name "terminal64" -ErrorAction SilentlyContinue |
            Where-Object { $_.Path -like "$installPath*" }
 if ($null -ne $running) {
     Write-Output ""
-    Write-Output "POZOR: terminal bezi. Pokud se v Expert logu neobjevi 'PQE: ... build $(Get-Date -Format 'yyyy.MM.dd HH:mm')',"
-    Write-Output "       odeber experta ze VSECH grafu a pridej ho znovu (nebo restartuj terminal)."
+    if ($oldRemoved) {
+        # Expert v grafu je navazany na cestu ke staremu .ex5 - z nove slozky se sam nenacte
+        Write-Output "POZOR: terminal bezi a expert se presunul do nove slozky. Expert v grafu se sam neprenacte -"
+        Write-Output "       odeber ho ze VSECH grafu a pridej znovu z Navigatoru (Experts -> $expertDir -> $expertName)."
+    } else {
+        Write-Output "POZOR: terminal bezi. Pokud se v Expert logu neobjevi 'PQE: ... build $(Get-Date -Format 'yyyy.MM.dd HH:mm')',"
+        Write-Output "       odeber experta ze VSECH grafu a pridej ho znovu (nebo restartuj terminal)."
+    }
 }
