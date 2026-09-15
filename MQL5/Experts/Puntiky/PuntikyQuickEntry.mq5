@@ -2086,6 +2086,9 @@ void DrawLabel(const string name, const int x, const int y, const string text, c
       ObjectSetInteger(0, name, OBJPROP_BACK, false);
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      //--- Bez vlastni bubliny by terminal ukazoval interni jmeno objektu;
+      //--- "\n" ji vypne (titulek si pozdeji nastavi vlastni text)
+      ObjectSetString(0, name, OBJPROP_TOOLTIP, "\n");
      }
    SetObjLong(name, OBJPROP_XDISTANCE, x);
    SetObjLong(name, OBJPROP_YDISTANCE, y);
@@ -2168,6 +2171,10 @@ void DrawHLine(const string name, const double price, const color clr,
       ObjectSetInteger(0, name, OBJPROP_BACK, false);
       ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      //--- Linka jede za kurzorem, takze mys je nad ni porad a terminal
+      //--- by u ni stale ukazoval bublinu "jmeno + cena". Hodnota "\n"
+      //--- automatickou bublinu vypina.
+      ObjectSetString(0, name, OBJPROP_TOOLTIP, "\n");
      }
    //--- Nahled jede za mysi a prekresluje se casto - zapisuje se jen to,
    //--- co se opravdu zmenilo
