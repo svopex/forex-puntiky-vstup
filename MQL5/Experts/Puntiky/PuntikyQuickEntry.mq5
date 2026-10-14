@@ -24,14 +24,14 @@
 
 //--- Obchod
 input group "=== Obchod ==="
-input int    InpStopLossPoints     = 300;       // Stop loss (body, předvyplní se do formuláře)
-input int    InpTakeProfitPoints   = 300;       // Profit target (body, 0 = bez PT, předvyplní se)
-input double InpRiskPercent        = 1.0;       // Riziko na obchod (% zůstatku, předvyplní se)
+input int    InpStopLossPoints     = 300;               // Stop loss (body, předvyplní se do formuláře)
+input int    InpTakeProfitPoints   = 300;               // Profit target (body, 0 = bez PT, předvyplní se)
+input double InpRiskPercent        = 1.0;               // Riziko na obchod (% zůstatku, předvyplní se)
 input string InpRiskPresets        = "0.5;1;1.5;2;2.5"; // Předvolby rizika pro tlačítka (%, oddělené ;)
-input int    InpSlippage           = 20;        // Maximální skluz MARKET příkazu (body)
-input int    InpExpirationMinutes  = 0;         // Platnost čekajícího příkazu STOP/LIMIT (minuty, 0 = do zrušení)
-input bool   InpAlignStopsToFill   = true;      // Po vyplnění dorovnat SL/PT na skutečnou plnicí cenu
-input long   InpMagic              = 20260828;  // Magic number
+input int    InpSlippage           = 20;                // Maximální skluz MARKET příkazu (body)
+input int    InpExpirationMinutes  = 0;                 // Platnost čekajícího příkazu STOP/LIMIT (minuty, 0 = do zrušení)
+input bool   InpAlignStopsToFill   = true;              // Po vyplnění dorovnat SL/PT na skutečnou plnicí cenu
+input long   InpMagic              = 202608281524;      // Magic number
 
 //--- Panel a nahled v grafu
 input group "=== Panel a graf ==="
