@@ -18,9 +18,11 @@
 //|  BUY MARKET / SELL MARKET vstoupi za trh hned, bez kliku do      |
 //|  grafu. Spodni rada tlacitek zavre zadane procento puvodniho     |
 //|  objemu pozice, kdyz je otevrena prave jedna pozice experta.     |
+//|  Tlacitko "nastav" u SL zmeri SL a PT v grafu: 1. klik = vychozi |
+//|  bod, 2. klik = konec; vzdalenost se zapise do SL i PT.          |
 //+------------------------------------------------------------------+
 // Verze experta - zvysuje se pred kazdym nasazenim (viz README, Verzovani)
-#define EA_VERSION "1.40"
+#define EA_VERSION "1.50"
 
 #property copyright "Puntiky"
 #property version   EA_VERSION
@@ -73,6 +75,8 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_EDIT_H           22          // vyska editacniho pole
 #define PQE_EDIT_W           130         // sirka editacniho pole
 #define PQE_LABEL_W          110         // sirka popisku pole
+#define PQE_MEASURE_W        52          // sirka tlacitka "nastav" mezi popiskem a polem SL
+#define PQE_MEASURE_GAP      6           // mezera mezi tlacitkem "nastav" a editacnim polem
 #define PQE_BTN_H            36          // vyska tlacitek
 #define PQE_BTN_GAP          8           // mezera kolem tlacitek
 #define PQE_BTN_FONT_PLUS    3           // o kolik je pismo BUY / SELL vetsi nez pismo panelu
@@ -140,6 +144,7 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_OBJ_BTN_CLOSE_ALL     (PQE_PREFIX + "BTN_CLOSE_ALL")
 #define PQE_OBJ_BTN_RISK          (PQE_PREFIX + "BTN_RISK_")     // + poradi predvolby
 #define PQE_OBJ_BTN_PARTIAL       (PQE_PREFIX + "BTN_PART_")     // + poradi predvolby zavreni
+#define PQE_OBJ_BTN_MEASURE       (PQE_PREFIX + "BTN_MEASURE")   // "nastav" - mereni SL/PT v grafu
 #define PQE_OBJ_STATUS       (PQE_PREFIX + "STATUS_")    // + poradi radku
 #define PQE_OBJ_PV_ENTRY     (PQE_PREFIX + "PV_ENTRY")
 #define PQE_OBJ_PV_SL        (PQE_PREFIX + "PV_SL")
@@ -154,6 +159,14 @@ enum ENUM_PQE_ARM
    PQE_ARM_SELL      = 2,   // vybira se misto pro SELL (STOP pod trhem, LIMIT nad nim, MARKET tesne u trhu)
    PQE_ARM_STOP_BUY  = 3,   // vybira se misto pro BUYSTOP (STOP nad trhem, MARKET pod nim, bez LIMIT)
    PQE_ARM_STOP_SELL = 4    // vybira se misto pro SELLSTOP (STOP pod trhem, MARKET nad nim, bez LIMIT)
+  };
+
+//--- Stav mereni SL/PT v grafu (tlacitko "nastav")
+enum ENUM_PQE_MEASURE
+  {
+   PQE_MEASURE_NONE = 0,   // nic se nemeri
+   PQE_MEASURE_FROM = 1,   // ceka se na 1. klik (vychozi bod)
+   PQE_MEASURE_TO   = 2    // ceka se na 2. klik (konec vzdalenosti)
   };
 
 //--- Zpusob vstupu podle polohy kliknuti vuci trhu
@@ -266,7 +279,9 @@ struct SPanelLayout
 //--- Globalni stav
 CTrade        g_trade;                        // obchodni rozhrani
 ENUM_PQE_ARM  g_armed       = PQE_ARM_NONE;   // probihajici vyber mista vstupu
-uint          g_armedAt     = 0;              // cas aktivace vyberu (GetTickCount)
+uint          g_armedAt     = 0;              // cas aktivace vyberu nebo mereni (GetTickCount)
+ENUM_PQE_MEASURE g_measure  = PQE_MEASURE_NONE; // probihajici mereni SL/PT v grafu
+double        g_measureFrom = 0.0;            // cena 1. kliku mereni
 string        g_lastEvent   = "";             // posledni akce pro panel a log
 int           g_slPoints    = 0;              // hodnoty formulare (posledni platne)
 int           g_tpPoints    = 0;
@@ -361,8 +376,7 @@ void OnDeinit(const int reason)
    EventKillTimer();
    ChartSetInteger(0, CHART_EVENT_MOUSE_MOVE, false);
 
-   g_armed = PQE_ARM_NONE;
-   DeletePreview();
+   Disarm("");
 
    if(reason != REASON_CHARTCHANGE)
       ObjectsDeleteAll(0, PQE_PREFIX);
@@ -404,10 +418,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
          // Linka nahledu jede presne pod kurzorem, takze klik do grafu
          // muze prijit jako klik na ni - bere se stejne jako klik do grafu
          if(StringFind(sparam, PQE_PREFIX + "PV_") == 0)
-           {
-            if(g_armed != PQE_ARM_NONE)
-               HandleChartClick((int)lparam, (int)dparam);
-           }
+            OnChartPointClick((int)lparam, (int)dparam);
          else
             if(StringFind(sparam, PQE_PREFIX + "BTN_") == 0)
               {
@@ -418,15 +429,18 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
          break;
 
       case CHARTEVENT_CLICK:
-         if(g_armed != PQE_ARM_NONE)
-            HandleChartClick((int)lparam, (int)dparam);
+         OnChartPointClick((int)lparam, (int)dparam);
          break;
 
       case CHARTEVENT_MOUSE_MOVE:
          g_mouseX = (int)lparam;
          g_mouseY = (int)dparam;
-         if(g_armed != PQE_ARM_NONE)
-            UpdatePreview();
+         // Mereni a vyber vstupu nikdy nebezi soucasne
+         if(g_measure != PQE_MEASURE_NONE)
+            UpdateMeasurePreview();
+         else
+            if(g_armed != PQE_ARM_NONE)
+               UpdatePreview();
          break;
 
       case CHARTEVENT_OBJECT_ENDEDIT:
@@ -435,14 +449,41 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
          break;
 
       case CHARTEVENT_KEYDOWN:
-         if(lparam == PQE_KEY_ESCAPE && g_armed != PQE_ARM_NONE)
-           {
-            Disarm("výběr zrušen (Esc)");
-            UpdatePanel();
-            ChartRedraw();
-           }
+         // Esc zrusi to, co prave probiha - mereni SL/PT, nebo vyber vstupu
+         if(lparam != PQE_KEY_ESCAPE ||
+            (g_measure == PQE_MEASURE_NONE && g_armed == PQE_ARM_NONE))
+            break;
+         Disarm(g_measure != PQE_MEASURE_NONE ? "měření SL/PT zrušeno (Esc)"
+                                              : "výběr zrušen (Esc)");
+         UpdatePanel();
+         ChartRedraw();
          break;
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Klik do grafu (nebo na linku nahledu pod kurzorem).              |
+//|  x, y - souradnice kliknuti v pixelech                           |
+//| Preda kliknutou cenu mereni SL/PT, nebo vyberu mista vstupu -    |
+//| podle toho, co prave bezi. Klik do panelu a klik tesne po stisku |
+//| tlacitka (stejne kliknuti muze prijit jeste jako udalost grafu)  |
+//| se ignoruji pro oba rezimy.                                      |
+//+------------------------------------------------------------------+
+void OnChartPointClick(const int x, const int y)
+  {
+   if(g_measure == PQE_MEASURE_NONE && g_armed == PQE_ARM_NONE)
+      return;
+   if(GetTickCount() - g_armedAt < PQE_CLICK_GUARD_MS)
+      return;
+
+   double price = 0.0;
+   if(!ChartPointPrice(x, y, price))
+      return;
+
+   if(g_measure != PQE_MEASURE_NONE)
+      HandleMeasureClick(price);
+   else
+      HandleChartClick(price);
   }
 
 //+------------------------------------------------------------------+
@@ -476,6 +517,13 @@ void OnPanelButton(const string name)
    if(name == PQE_OBJ_BTN_MKT_BUY || name == PQE_OBJ_BTN_MKT_SELL)
      {
       OnMarketButton(name == PQE_OBJ_BTN_MKT_BUY);
+      return;
+     }
+
+   //--- Mereni SL/PT v grafu (tlacitko "nastav" u pole SL)
+   if(name == PQE_OBJ_BTN_MEASURE)
+     {
+      OnMeasureButton();
       return;
      }
 
@@ -650,6 +698,12 @@ bool ParseNumber(const string text, double &value)
    return(true);
   }
 
+//--- Meze pole SL v bodech - sdili je rucni zapis (ApplyField) i nahled mereni
+bool SlPointsInRange(const double points)
+  {
+   return(points >= 1.0 && points <= PQE_MAX_POINTS);
+  }
+
 //+------------------------------------------------------------------+
 //| Prevezme hodnotu jednoho pole formulare do globalniho stavu.     |
 //|  name  - jmeno objektu pole                                      |
@@ -676,7 +730,7 @@ bool ApplyField(const string name, string text, string &error)
    //--- proslo a panel by ukazoval nesmyslnou cenu SL / PT
    if(name == PQE_OBJ_EDIT_SL)
      {
-      if(value < 1.0 || value > PQE_MAX_POINTS)
+      if(!SlPointsInRange(value))
         {
          error = StringFormat("SL musí být v rozsahu 1..%d bodů", PQE_MAX_POINTS);
          return(false);
@@ -1513,8 +1567,8 @@ void OnCloseButton(const ENUM_PQE_CLOSE kind)
 void OnMarketButton(const bool isBuy)
   {
    const string dirText = isBuy ? "BUY MARKET" : "SELL MARKET";
-   if(g_armed != PQE_ARM_NONE)
-      Disarm("");
+   // Rozpracovany vyber vstupu nebo mereni SL/PT by po obchodu dal cekal na klik
+   Disarm("");
 
    string err;
    if(!EntryAllowed(err))
@@ -1799,10 +1853,11 @@ void OnDirectionButton(const bool isBuy, const bool stopOnly)
       Disarm("výběr " + dirText + " zrušen");
    else
      {
+      // Ukonci predchozi vyber i pripadne mereni SL/PT (sdileji klik do grafu)
+      Disarm("");
       string err;
       if(!EntryAllowed(err))
         {
-         Disarm("");
          g_lastEvent = dirText + ": " + err;
          Print("PQE: ", g_lastEvent);
         }
@@ -1821,12 +1876,15 @@ void OnDirectionButton(const bool isBuy, const bool stopOnly)
   }
 
 //+------------------------------------------------------------------+
-//| Ukonci vyber mista vstupu a uklidi nahled.                       |
+//| Ukonci vyber mista vstupu i mereni SL/PT a uklidi nahled.        |
 //|  message - text do panelu (prazdny = nechat posledni)            |
+//| Oba rezimy cekaji na klik do grafu a nesmi bezet soucasne, proto |
+//| je ukoncuje jedna funkce - volat ji lze kdykoli, i kdyz nic nebezi.|
 //+------------------------------------------------------------------+
 void Disarm(const string message)
   {
-   g_armed = PQE_ARM_NONE;
+   g_armed   = PQE_ARM_NONE;
+   g_measure = PQE_MEASURE_NONE;
    DeletePreview();
    if(message != "")
       g_lastEvent = message;
@@ -1834,25 +1892,12 @@ void Disarm(const string message)
 
 //+------------------------------------------------------------------+
 //| Klik do grafu behem vyberu mista vstupu.                         |
-//|  x, y - souradnice kliknuti v pixelech                           |
-//| Klik do panelu a klik tesne po stisku tlacitka (stejne kliknuti  |
-//| muze prijit jeste jako udalost grafu) se ignoruji. Neproveditelny|
-//| klik jen ohlasi duvod a vyber zustava aktivni, po odeslani       |
-//| prikazu (i neuspesnem) vyber konci.                              |
+//|  price - kliknuta cena (filtr kliku dela OnChartPointClick)      |
+//| Neproveditelny klik jen ohlasi duvod a vyber zustava aktivni,    |
+//| po odeslani prikazu (i neuspesnem) vyber konci.                  |
 //+------------------------------------------------------------------+
-void HandleChartClick(const int x, const int y)
+void HandleChartClick(const double price)
   {
-   if(GetTickCount() - g_armedAt < PQE_CLICK_GUARD_MS)
-      return;
-   if(IsInsidePanel(x, y))
-      return;
-
-   int      sub   = 0;
-   datetime time  = 0;
-   double   price = 0.0;
-   if(!ChartXYToTimePrice(0, x, y, sub, time, price) || sub != 0)
-      return;
-
    //--- Od stisku tlacitka mohla uplynout dlouha doba a podminky se mohly
    //--- zmenit (vypnuty Algo Trading, odebrane povoleni). Kontrola se
    //--- proto opakuje tesne pred odeslanim - jinak by misto srozumitelne
@@ -1901,11 +1946,8 @@ void UpdatePreview()
    //--- Nad panelem se nahled schova: tam se vstup zadat neda a linka
    //--- vedena pod kurzorem by lezela pres tlacitka (ZRUSIT BUY by
    //--- klik nedostalo)
-   int      sub   = 0;
-   datetime time  = 0;
-   double   price = 0.0;
-   if(IsInsidePanel(g_mouseX, g_mouseY) ||
-      !ChartXYToTimePrice(0, g_mouseX, g_mouseY, sub, time, price) || sub != 0)
+   double price = 0.0;
+   if(!ChartPointPrice(g_mouseX, g_mouseY, price))
      {
       //--- Mazat a prekreslovat jen tehdy, kdyz nahled opravdu v grafu je -
       //--- pri kurzoru nad panelem sem jinak chodi kazdy tick nadarmo
@@ -1985,6 +2027,172 @@ void DeletePreview()
    //--- Pamet vykresleneho nahledu uz neplati
    g_pvShown = false;
    g_pvText  = "";
+  }
+
+//+------------------------------------------------------------------+
+//| Cena bodu grafu pod souradnicemi mysi.                           |
+//|  x, y  - souradnice v pixelech                                   |
+//|  price - out: cena v hlavnim okne grafu                          |
+//| Vraci false nad panelem (tam se klik do grafu nebere) a mimo     |
+//| hlavni okno grafu (podokna indikatoru maji jinou stupnici).      |
+//+------------------------------------------------------------------+
+bool ChartPointPrice(const int x, const int y, double &price)
+  {
+   price = 0.0;
+   if(IsInsidePanel(x, y))
+      return(false);
+
+   int      sub  = 0;
+   datetime time = 0;
+   return(ChartXYToTimePrice(0, x, y, sub, time, price) && sub == 0);
+  }
+
+//+------------------------------------------------------------------+
+//| Mereni SL/PT v grafu                                             |
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Stisk tlacitka "nastav" u pole SL.                               |
+//| Tlacitko se chova stridave: stisk zahaji mereni, dalsi stisk ho  |
+//| zrusi. Probihajici vyber mista vstupu se zrusi - oba rezimy      |
+//| cekaji na klik do grafu a nesmi bezet soucasne. Nahled se zatim  |
+//| nekresli - kurzor je nad tlacitkem, tedy nad panelem.            |
+//+------------------------------------------------------------------+
+void OnMeasureButton()
+  {
+   if(g_measure != PQE_MEASURE_NONE)
+      Disarm("měření SL/PT zrušeno");
+   else
+     {
+      Disarm("");
+      g_measure   = PQE_MEASURE_FROM;
+      g_armedAt   = GetTickCount();
+      g_lastEvent = "SL/PT: klikni na 1. bod v grafu";
+     }
+
+   UpdatePanel();
+   ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Zmerena vzdalenost od 1. bodu v celych bodech.                   |
+//|  price - cena konce mereni                                       |
+//| Vraci double - obri vzdalenost tak nepretece prevodem na int     |
+//| a kontrola rozsahu (SlPointsInRange) ji odmitne.                 |
+//+------------------------------------------------------------------+
+double MeasuredPoints(const double price)
+  {
+   return(MathRound(MathAbs(price - g_measureFrom) / _Point));
+  }
+
+//+------------------------------------------------------------------+
+//| Klik do grafu behem mereni SL/PT.                                |
+//|  price - kliknuta cena (filtr kliku dela OnChartPointClick)      |
+//| 1. klik ulozi vychozi cenu, 2. klik zapise vzdalenost do SL i PT |
+//| (PT = SL). Vzdalenost mimo rozsah pole SL jen ohlasi a mereni    |
+//| pokracuje.                                                       |
+//+------------------------------------------------------------------+
+void HandleMeasureClick(const double price)
+  {
+   //--- 1. klik: vychozi bod mereni - jeho linka se uz nemeni, kresli
+   //--- se jednou tady, ne pri kazdem pohybu mysi
+   if(g_measure == PQE_MEASURE_FROM)
+     {
+      g_measureFrom = price;
+      g_measure     = PQE_MEASURE_TO;
+      g_lastEvent   = "SL/PT: klikni na 2. bod v grafu";
+      DrawHLine(PQE_OBJ_PV_ENTRY, g_measureFrom, InpColorText, STYLE_SOLID, 1);
+      UpdateMeasurePreview();
+      UpdatePanel();
+      ChartRedraw();
+      return;
+     }
+
+   //--- 2. klik: hodnota jde stejnou cestou jako rucni zapis do pole,
+   //--- takze plati stejne meze i format. PT ma sirsi rozsah nez SL,
+   //--- po prijatem SL proto projde vzdy.
+   const string text = DoubleToString(MeasuredPoints(price), 0);
+   string err;
+   if(!ApplyField(PQE_OBJ_EDIT_SL, text, err))
+     {
+      g_lastEvent = err;
+      UpdatePanel();
+      ChartRedraw();
+      return;
+     }
+   ApplyField(PQE_OBJ_EDIT_TP, text, err);
+   ObjectSetString(0, PQE_OBJ_EDIT_SL, OBJPROP_TEXT, FieldValueText(PQE_OBJ_EDIT_SL));
+   ObjectSetString(0, PQE_OBJ_EDIT_TP, OBJPROP_TEXT, FieldValueText(PQE_OBJ_EDIT_TP));
+
+   Disarm(StringFormat("SL = PT = %d b (změřeno v grafu)", g_slPoints));
+   Print("PQE: ", g_lastEvent);
+   UpdatePanel();
+   ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Prekresli nahled mereni podle polohy mysi.                       |
+//| Plna linka = vychozi bod (kresli ji HandleMeasureClick), teckovana|
+//| linka jede za kurzorem a popisek u kurzoru ukazuje vzdalenost    |
+//| v bodech. Nad panelem se schova jen linka u kurzoru a popisek,   |
+//| vychozi bod zustava videt. g_pvShown tu znamena "linka u kurzoru |
+//| je v grafu".                                                     |
+//+------------------------------------------------------------------+
+void UpdateMeasurePreview()
+  {
+   if(g_measure == PQE_MEASURE_NONE || g_mouseX < 0)
+      return;
+
+   double price = 0.0;
+   if(!ChartPointPrice(g_mouseX, g_mouseY, price))
+     {
+      //--- Mazat a prekreslovat jen tehdy, kdyz linka u kurzoru v grafu je
+      if(g_pvShown)
+        {
+         ObjectDelete(0, PQE_OBJ_PV_SL);
+         ObjectDelete(0, PQE_OBJ_PV_LABEL);
+         g_pvShown = false;
+         g_pvText  = "";
+         ChartRedraw();
+        }
+      return;
+     }
+
+   //--- Text a barva: pred 1. klikem jen vyzva, pak vzdalenost
+   //--- (sede, kdyz je mimo rozsah pole SL)
+   string text = "SL/PT: klikni na 1. bod (Esc)";
+   color  clr  = InpColorText;
+   if(g_measure == PQE_MEASURE_TO)
+     {
+      const double points = MeasuredPoints(price);
+      if(SlPointsInRange(points))
+        {
+         text = StringFormat("SL = PT = %.0f b = %s", points,
+                             DoubleToString(points * _Point, _Digits));
+         clr  = InpColorSL;
+        }
+      else
+        {
+         text = StringFormat("SL/PT: mimo 1..%d b", PQE_MAX_POINTS);
+         clr  = PQE_COLOR_OFF;
+        }
+     }
+
+   //--- Nezmeneny nahled se nekresli znovu (stejne jako u UpdatePreview)
+   if(g_pvShown && text == g_pvText && g_mouseX == g_pvX && g_mouseY == g_pvY &&
+      SamePrice(price, g_pvSL))
+      return;
+
+   DrawHLine(PQE_OBJ_PV_SL, price, clr, STYLE_DOT, 1);
+   DrawLabel(PQE_OBJ_PV_LABEL, g_mouseX + Dpi(16), g_mouseY + Dpi(18), Fit(text), clr);
+
+   //--- Vykresleny stav pro porovnani pri dalsim volani
+   g_pvShown = true;
+   g_pvSL    = price;
+   g_pvText  = text;
+   g_pvX     = g_mouseX;
+   g_pvY     = g_mouseY;
+   ChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -2133,6 +2341,17 @@ void UpdatePanel()
                DoubleToString(g_riskPercent, 2),
                "Riziko na obchod v procentech zůstatku účtu");
 
+   //--- Tlacitko "nastav" mezi popiskem a polem SL: mereni SL/PT v grafu.
+   //--- Behem mereni se zmeni na "zrušit" (stejne jako BUY na ZRUSIT BUY).
+   const bool measuring = (g_measure != PQE_MEASURE_NONE);
+   DrawButton(PQE_OBJ_BTN_MEASURE, x + Px(PQE_LABEL_W), lo.yFields[0],
+              Px(PQE_MEASURE_W), Px(PQE_EDIT_H),
+              measuring ? "zrušit" : "nastav",
+              measuring ? PQE_COLOR_BTN_CANCEL : PQE_COLOR_BTN_RISK_OFF,
+              measuring ? "Zruší měření SL/PT v grafu."
+                        : "Nastaví SL a PT z grafu: 1. klik = výchozí bod, 2. klik = konec (PT = SL).",
+              0);
+
    //--- Predvolby rizika (vybrana je zvyraznena)
    DrawRiskButtons(x, lo.yRisk, inner);
 
@@ -2201,10 +2420,14 @@ void BuildStatusLines(string &lines[], const SPanelState &st)
    //--- Stav: co se prave deje, nebo proc nejde obchodovat
    // Kratky tvar - i "stav: SELLSTOP - ..." se musi vejit na radek panelu
    const string blocked = OpenBlockReason(st);
-   if(g_armed != PQE_ARM_NONE)
-      lines[0] = "stav: " + ArmName(g_armed) + " - klikni do grafu (Esc)";
+   if(g_measure != PQE_MEASURE_NONE)
+      lines[0] = StringFormat("stav: SL/PT - klikni na %d. bod (Esc)",
+                              g_measure == PQE_MEASURE_FROM ? 1 : 2);
    else
-      lines[0] = "stav: " + (blocked != "" ? blocked : "připraven - stiskni BUY nebo SELL");
+      if(g_armed != PQE_ARM_NONE)
+         lines[0] = "stav: " + ArmName(g_armed) + " - klikni do grafu (Esc)";
+      else
+         lines[0] = "stav: " + (blocked != "" ? blocked : "připraven - stiskni BUY nebo SELL");
 
    //--- Objem z rizika pro aktualni SL a zustatek (texty jsou kratke,
    //--- radek panelu ma jen PanelMaxChars znaku)
@@ -2245,7 +2468,10 @@ void DrawFormRow(const string name, const string label, const int x, const int y
                  const string initial, const string tooltip)
   {
    DrawLabel(name + "_LBL", x, y + Px(3), label, InpColorText);
-   DrawEdit(name, x + Px(PQE_LABEL_W), y, Px(PQE_EDIT_W), Px(PQE_EDIT_H), initial, tooltip);
+   // Pole vsech radku zacinaji za sloupcem tlacitka "nastav" (je jen na
+   // radku SL), aby lezela pod sebou zarovnana
+   DrawEdit(name, x + Px(PQE_LABEL_W + PQE_MEASURE_W + PQE_MEASURE_GAP), y,
+            Px(PQE_EDIT_W), Px(PQE_EDIT_H), initial, tooltip);
   }
 
 //+------------------------------------------------------------------+

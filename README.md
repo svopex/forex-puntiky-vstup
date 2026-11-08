@@ -22,6 +22,11 @@ Expert sám nikdy nic neobchoduje — dělá jen to, co se mu klikne.
    `SL (body)`, `PT (body)`, `Riziko (%)`. Kteroukoli hodnotu lze
    před obchodem přepsat (Enter nebo odchod z pole ji potvrdí; nesmysl se vrátí
    na poslední platnou hodnotu a důvod se ukáže v panelu).
+   SL a PT lze i **změřit v grafu** tlačítkem `nastav` mezi popiskem a polem
+   `SL (body)`: první klik do grafu určí výchozí bod (plná linka), za myší pak
+   jede tečkovaná linka s popiskem vzdálenosti v bodech a druhý klik ji zapíše
+   do `SL` i `PT` (PT = SL). Během měření je na tlačítku `zrušit`; měření ruší
+   i **Esc** a stisk tlačítka vstupu (výběr vstupu a měření neběží zároveň).
    Pod polem `Riziko (%)` je řada tlačítek s předvolbami (`0.5%  1%  1.5%  2%
    2.5%  3%`, nastavitelné vstupem `InpRiskPresets`) — klik nastaví riziko a zapíše
    ho do pole, zvýrazněné je tlačítko odpovídající aktuální hodnotě (po startu
@@ -167,9 +172,9 @@ ručně ve vlastnostech experta (nebo experta odebrat a přidat znovu).
 
 ```
 VSTUP XAUUSD  Ask 2345.10  Bid 2345.00     ← symbol grafu
-SL (body)   [300     ]
-PT (body)   [300     ]
-Riziko (%)  [1.00    ]
+SL (body)   [nastav] [300     ]     ← nastav = změřit SL/PT v grafu
+PT (body)            [300     ]
+Riziko (%)           [1.00    ]
 [0.5%] [1%] [1.5%] [2%] [2.5%] [3%]     ← vybrané zvýrazněno modře
 [   BUYSTOP   ] [  SELLSTOP   ]
 [     BUY     ] [    SELL     ]
@@ -251,7 +256,7 @@ panelu. Před každým nasazením nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.40**
+**Aktuální verze: 1.50**
 
 ## Struktura repozitáře
 
