@@ -32,6 +32,9 @@ Expert sám nikdy nic neobchoduje — dělá jen to, co se mu klikne.
    ho do pole, zvýrazněné je tlačítko odpovídající aktuální hodnotě (po startu
    tedy `InpRiskPercent`, výchozí 1 %). Ručně zapsaná hodnota mimo předvolby
    nezvýrazní žádné.
+   Pod ní je řada `1  2  3` — **kolik pozic vstup otevře** (viz
+   [Více pozic jedním vstupem](#více-pozic-jedním-vstupem)); po startu je
+   vybraná `1`.
 3. Stiskni `BUY` nebo `SELL` (případně `BUYSTOP` nebo `SELLSTOP` v řadě nad
    nimi, viz níže). Tlačítko se změní na `ZRUŠIT BUY` / `ZRUŠIT SELL`
    (`ZRUŠIT BUYSTOP` / `ZRUŠIT SELLSTOP`) a za myší začne jezdit **linka
@@ -66,6 +69,35 @@ Expert sám nikdy nic neobchoduje — dělá jen to, co se mu klikne.
 
 Výběr se ruší klávesou **Esc** nebo opětovným stiskem téhož tlačítka. Stisk
 jiného tlačítka vstupu během výběru jen přepne směr nebo variantu.
+
+### Více pozic jedním vstupem
+
+Řada tlačítek `1`, `2`, `3` pod předvolbami rizika určí, kolik pozic otevře
+každý vstup (`BUY` / `SELL`, `BUYSTOP` / `SELLSTOP` i `BUY MARKET` /
+`SELL MARKET`):
+
+| Tlačítko | Pozice | PT |
+|---|---|---|
+| `1` | jedna | PT |
+| `2` | dvě | PT a 2×PT |
+| `3` | tři | PT, 2×PT a 3×PT |
+
+- **SL je všem pozicím stejný** (z pole `SL (body)`), PT se násobí pořadím
+  pozice; při `PT = 0` jsou všechny pozice bez PT.
+- **Riziko z pole `Riziko (%)` se dělí mezi pozice rovným dílem** — celková
+  ztráta při zásahu SL tak odpovídá zadanému procentu. Např. riziko 3 %
+  a `3` = tři pozice po 1 %. Každý díl se zaokrouhlí dolů na krok objemu;
+  když na díl nestačí minimální lot, vstup se nezadá. Marže se ověřuje za
+  všechny pozice dohromady.
+- Každá pozice je samostatný příkaz (komentář `PQE BUYSTOP 2/3` apod.); když
+  server některý odmítne, další se už neposílají a panel ukáže, kolik jich
+  prošlo.
+- Náhled v grafu kreslí linku PT pro každou pozici, popisek a řádek `objem`
+  ukazují objem jako `3x0.11 lot`.
+- Funguje jen na **hedging** účtu — netting by pozice sloučil do jedné
+  s jediným PT, proto tam jsou `2` a `3` šedé.
+
+Po spuštění experta (i po změně parametrů nebo rekompilaci) je vybraná `1`.
 
 ### Vstup za trh jedním kliknutím
 
@@ -176,6 +208,7 @@ SL (body)   [nastav] [300     ]     ← nastav = změřit SL/PT v grafu
 PT (body)            [300     ]
 Riziko (%)           [1.00    ]
 [0.5%] [1%] [1.5%] [2%] [2.5%] [3%]     ← vybrané zvýrazněno modře
+[   1   ] [   2   ] [   3   ]           ← počet pozic (PT, 2×PT, 3×PT)
 [   BUYSTOP   ] [  SELLSTOP   ]
 [     BUY     ] [    SELL     ]
 [ BUY MARKET  ] [ SELL MARKET ]           ← vstup za trh hned
@@ -185,7 +218,7 @@ stav: připraven - stiskni BUY nebo SELL
 objem 0.33 lot = 99.00 USD (0.99 %)
 SL 300 b = 3.00   PT 300 b = 3.00
 příkazy 0  pozice 0  zůstatek 10000.00
-» BUY MARKET #740748081 4459.66 0.08 lot
+» BUY MARKET 0.08 lot @ 4459.66 #740748081
 ```
 
 Řádek `stav:` říká, proč se případně nedá obchodovat (vypnutý Algo Trading,
@@ -256,7 +289,7 @@ panelu. Před každým nasazením nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.50**
+**Aktuální verze: 1.60**
 
 ## Struktura repozitáře
 

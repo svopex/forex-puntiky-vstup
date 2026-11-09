@@ -20,13 +20,16 @@
 //|  objemu pozice, kdyz je otevrena prave jedna pozice experta.     |
 //|  Tlacitko "nastav" u SL zmeri SL a PT v grafu: 1. klik = vychozi |
 //|  bod, 2. klik = konec; vzdalenost se zapise do SL i PT.          |
+//|  Tlacitka 1 / 2 / 3 pod rizikem urci, kolik pozic vstup otevre:  |
+//|  pozice k ma PT = k x PT, SL je vsem spolecny a riziko se mezi   |
+//|  pozice deli rovnym dilem.                                       |
 //+------------------------------------------------------------------+
 // Verze experta - zvysuje se pred kazdym nasazenim (viz README, Verzovani)
-#define EA_VERSION "1.50"
+#define EA_VERSION "1.60"
 
 #property copyright "Puntiky"
 #property version   EA_VERSION
-#property description "Rychlý vstup: BUY/SELL (STOP, LIMIT nebo MARKET) či BUYSTOP/SELLSTOP + klik do grafu, nebo BUY/SELL MARKET hned; částečné zavření pozice"
+#property description "Rychlý vstup: BUY/SELL (STOP, LIMIT nebo MARKET) či BUYSTOP/SELLSTOP + klik do grafu, nebo BUY/SELL MARKET hned; 1-3 pozice s PT, 2xPT, 3xPT; částečné zavření pozice"
 
 // Vychozi predvolby tlacitek - pouzije je vstup i nahradni rada, kdyz
 // vstup neobsahuje zadnou platnou hodnotu
@@ -87,6 +90,7 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_RISK_BTN_GAP     6           // mezera mezi tlacitky predvoleb rizika
 #define PQE_MAX_RISK_PRESETS 8           // nejvyse tolik predvoleb rizika
 #define PQE_MAX_CLOSE_PRESETS 4          // nejvyse tolik tlacitek castecneho zavreni (popisky jsou delsi)
+#define PQE_MAX_POSITIONS    3           // nejvyse tolik pozic na jeden vstup (tlacitka 1 / 2 / 3)
 #define PQE_RISK_EPS         0.005       // tolerance shody rizika s predvolbou (%)
 #define PQE_MAX_POINTS       1000000     // horni mez SL / PT v bodech (chrani prevod na int)
 #define PQE_MAX_RISK_PCT     100.0       // horni mez rizika na obchod (% zustatku)
@@ -144,6 +148,7 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_OBJ_BTN_CLOSE_ALL     (PQE_PREFIX + "BTN_CLOSE_ALL")
 #define PQE_OBJ_BTN_RISK          (PQE_PREFIX + "BTN_RISK_")     // + poradi predvolby
 #define PQE_OBJ_BTN_PARTIAL       (PQE_PREFIX + "BTN_PART_")     // + poradi predvolby zavreni
+#define PQE_OBJ_BTN_COUNT         (PQE_PREFIX + "BTN_CNT_")      // + poradi tlacitka poctu pozic (0 = 1 pozice)
 #define PQE_OBJ_BTN_MEASURE       (PQE_PREFIX + "BTN_MEASURE")   // "nastav" - mereni SL/PT v grafu
 #define PQE_OBJ_STATUS       (PQE_PREFIX + "STATUS_")    // + poradi radku
 #define PQE_OBJ_PV_ENTRY     (PQE_PREFIX + "PV_ENTRY")
@@ -201,8 +206,9 @@ struct SEntryPlan
    ENUM_PQE_MODE     mode;      // STOP / MARKET / prilis blizko
    double            entry;     // vstupni cena (u MARKET aktualni Ask/Bid)
    double            sl;        // stop loss (0 = nespocten)
-   double            tp;        // profit target (0 = bez PT)
-   double            lots;      // objem
+   double            tp;        // profit target 1. pozice (0 = bez PT); pozice k ma k-nasobnou vzdalenost
+   int             count;     // pocet pozic, ktere vstup otevre
+   double            lots;      // objem jedne pozice
    bool              valid;     // lze zadat
    string            reason;    // proc nelze zadat (kdyz valid = false)
   };
@@ -248,7 +254,7 @@ struct SPanelState
    string            closeReason;  // duvod zakazu zavirani
    double            balance;      // zustatek uctu
    double            slDist;       // vzdalenost SL v cene podle formulare
-   double            lots;         // objem z rizika (0 = nelze spocitat)
+   double            lots;         // objem jedne pozice z rizika (0 = nelze spocitat)
    string            lotReason;    // duvod, proc objem nelze pouzit
   };
 
@@ -268,6 +274,7 @@ struct SPanelLayout
    int               yTitle;       // titulek s cenou
    int               yFields[PQE_FORM_FIELDS]; // radky formulare (SL, PT, riziko)
    int               yRisk;        // rada predvoleb rizika
+   int               yCount;       // rada tlacitek poctu pozic (1 / 2 / 3)
    int               yBuySell;     // tlacitka BUY / SELL
    int               yStops;       // tlacitka BUYSTOP / SELLSTOP
    int               yMarket;      // tlacitka BUY MARKET / SELL MARKET
@@ -286,7 +293,8 @@ string        g_lastEvent   = "";             // posledni akce pro panel a log
 int           g_slPoints    = 0;              // hodnoty formulare (posledni platne)
 int           g_tpPoints    = 0;
 double        g_riskPercent = 0.0;
-SSentOrder    g_sent[PQE_MAX_SENT];           // kruhova pamet odeslanych prikazu
+int           g_positionCount = 1;            // kolik pozic vstup otevre (tlacitka 1 / 2 / 3)
+SSentOrder   g_sent[PQE_MAX_SENT];           // kruhova pamet odeslanych prikazu
 int           g_sentNext    = 0;              // dalsi volny slot v pameti
 int           g_mouseX      = -1;             // posledni poloha mysi (obnova nahledu po ticku)
 int           g_mouseY      = -1;
@@ -305,7 +313,8 @@ bool          g_pvShown     = false;          // je nahled prave v grafu?
 double        g_pvEntry     = 0.0;            // vykreslena cena vstupu
 double        g_pvSL        = 0.0;            // vykreslena cena SL
 double        g_pvTP        = 0.0;            // vykreslena cena PT
-string        g_pvText      = "";             // vykresleny popisek u kurzoru
+int           g_pvTpLines   = 0;              // pocet vykreslenych linek PT (jedna na pozici)
+string       g_pvText      = "";             // vykresleny popisek u kurzoru
 int           g_pvX         = -1;             // poloha popisku, pro kterou byl nahled vykreslen
 int           g_pvY         = -1;
 
@@ -348,6 +357,12 @@ int OnInit()
 
    for(int i = 0; i < PQE_MAX_SENT; i++)
       g_sent[i].ticket = 0;
+
+   //--- Vic pozic na vstup jen na hedging uctu. Zmena uctu znovu vola
+   //--- OnInit, invariant tak plati po celou dobu behu a navrh vstupu
+   //--- ani panel ho uz kontrolovat nemusi.
+   if(CountBlockReason(g_positionCount) != "")
+      g_positionCount = 1;
 
    InitFormValues();
    UpdatePanel();
@@ -537,6 +552,12 @@ void OnPanelButton(const string name)
    if(index >= 0)
      {
       OnRiskButton(index);
+      return;
+     }
+   index = PresetIndex(name, PQE_OBJ_BTN_COUNT);
+   if(index >= 0)
+     {
+      OnCountButton(index);
       return;
      }
    index = PresetIndex(name, PQE_OBJ_BTN_PARTIAL);
@@ -804,6 +825,16 @@ void OnFieldEdited(const string name)
    else
       g_lastEvent = "formulář: " + FieldLabel(name) + " = " + FieldValueText(name);
 
+   RefreshPanelAndPreview();
+  }
+
+//+------------------------------------------------------------------+
+//| Prekresli panel po zmene formulare (pole, riziko, pocet pozic).  |
+//| Probihajici vyber vstupu dostane novy nahled - SL, PT i objem    |
+//| se mohly zmenit.                                                 |
+//+------------------------------------------------------------------+
+void RefreshPanelAndPreview()
+  {
    UpdatePanel();
    if(g_armed != PQE_ARM_NONE)
       UpdatePreview();
@@ -891,10 +922,78 @@ void OnRiskButton(const int index)
    ObjectSetString(0, PQE_OBJ_EDIT_RISK, OBJPROP_TEXT, DoubleToString(g_riskPercent, 2));
    g_lastEvent = "riziko " + FormatPercent(g_riskPercent);
 
-   UpdatePanel();
-   if(g_armed != PQE_ARM_NONE)
-      UpdatePreview();
-   ChartRedraw();
+   RefreshPanelAndPreview();
+  }
+
+//+------------------------------------------------------------------+
+//| Je ucet hedging? Jen tam muze mit expert vic pozic na symbolu -  |
+//| netting by vice vstupu sloucil do jedne pozice s jedinym PT a    |
+//| castecne zavreni pozice nezna.                                   |
+//+------------------------------------------------------------------+
+bool IsHedgingAccount()
+  {
+   return(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
+  }
+
+//+------------------------------------------------------------------+
+//| Proc nelze otevrit dany pocet pozic ("" = lze).                  |
+//|  count - pocet pozic na jeden vstup                              |
+//| Sdili ho tlacitka poctu pozic, jejich obsluha a OnInit.          |
+//+------------------------------------------------------------------+
+string CountBlockReason(const int count)
+  {
+   if(count > 1 && !IsHedgingAccount())
+      return("více pozic jen na hedging účtu");
+   return("");
+  }
+
+//--- Objem jako text: "0.33" pro jednu pozici, "3x0.11" pro vice pozic
+string FormatLotsCount(const double lots, const int count)
+  {
+   if(count > 1)
+      return(StringFormat("%dx%s", count, FormatLots(lots)));
+   return(FormatLots(lots));
+  }
+
+//+------------------------------------------------------------------+
+//| Vzdalenosti PT vsech pozic v bodech jako text.                   |
+//|  count - pocet pozic                                             |
+//| Pozice k ma PT = k x PT z formulare: "300 b" nebo "300/600/900 b"|
+//| a bez PT z formulare "bez PT".                                   |
+//+------------------------------------------------------------------+
+string TpPointsText(const int count)
+  {
+   if(g_tpPoints <= 0)
+      return("bez PT");
+   string text = IntegerToString(g_tpPoints);
+   for(int k = 2; k <= count; k++)
+      text += "/" + IntegerToString(k * g_tpPoints);
+   return(text + " b");
+  }
+
+//+------------------------------------------------------------------+
+//| Stisk tlacitka poctu pozic (1 / 2 / 3).                          |
+//|  index - poradi tlacitka (0 = jedna pozice)                      |
+//| Vic pozic jde jen na hedging uctu (viz CountBlockReason).        |
+//| Rozpracovany vyber vstupu zustava, nahled se jen prekresli.      |
+//+------------------------------------------------------------------+
+void OnCountButton(const int index)
+  {
+   const int count = index + 1;
+   if(count < 1 || count > PQE_MAX_POSITIONS)
+      return;
+
+   const string reason = CountBlockReason(count);
+   if(reason != "")
+      g_lastEvent = StringFormat("%d pozice: %s", count, reason);
+   else
+     {
+      g_positionCount = count;
+      g_lastEvent = (count == 1) ? "vstup otevře 1 pozici"
+                    : StringFormat("vstup otevře %d pozice, PT %s", count, TpPointsText(count));
+     }
+
+   RefreshPanelAndPreview();
   }
 
 //+------------------------------------------------------------------+
@@ -1076,14 +1175,15 @@ double RoundToLotStep(const double lot, const bool down)
 
 //+------------------------------------------------------------------+
 //| Vypocet objemu z rizika.                                         |
-//|  slDistance - vzdalenost SL v cene                               |
-//|  reason     - out: duvod, proc objem nelze pouzit                |
+//|  slDistance  - vzdalenost SL v cene                              |
+//|  riskPercent - riziko jedne pozice (% zustatku)                  |
+//|  reason      - out: duvod, proc objem nelze pouzit               |
 //| Objem se dopocita tak, aby ztrata na SL odpovidala zadanemu      |
 //| procentu zustatku, a zaokrouhli se DOLU na krok objemu. Kdyz na  |
 //| riziko nestaci ani nejmensi dovoleny lot, vraci 0 - riziko nesmi |
 //| tise pretect pres zadany limit.                                  |
 //+------------------------------------------------------------------+
-double CalcLot(const double slDistance, string &reason)
+double CalcLot(const double slDistance, const double riskPercent, string &reason)
   {
    reason = "";
 
@@ -1099,7 +1199,7 @@ double CalcLot(const double slDistance, string &reason)
      }
 
    //--- Zaokrouhleni dolu na krok objemu - riziko nesmi pretect
-   double lot = RoundToLotStep((balance * g_riskPercent / 100.0) / lossPerLot, true);
+   double lot = RoundToLotStep((balance * riskPercent / 100.0) / lossPerLot, true);
 
    //--- Orez na maximum symbolu. VOLUME_MAX nemusi byt nasobkem kroku
    //--- objemu, proto se po orezu zaokrouhluje znovu dolu - jinak by
@@ -1113,7 +1213,7 @@ double CalcLot(const double slDistance, string &reason)
      {
       reason = StringFormat("min. lot %s = %.2f %% > %.2f %%",
                             FormatLots(minLot), minLot * lossPerLot / balance * 100.0,
-                            g_riskPercent);
+                            riskPercent);
       return(0.0);
      }
 
@@ -1146,6 +1246,8 @@ string ModeName(const ENUM_PQE_MODE mode)
 //| Pasmo mezi trhem a stop levelem broker pro STOP nepovoli a jako  |
 //| trzni vstup by prekvapilo - tam se klik odmitne.                 |
 //| SL a PT se meri od vstupni ceny, objem z rizika a vzdalenosti SL.|
+//| Pri vice pozicich (g_positionCount) ma pozice k PT = k x PT, SL  |
+//| je vsem spolecny a objem jedne pozice se pocita z podilu rizika. |
 //+------------------------------------------------------------------+
 void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntryPlan &plan)
   {
@@ -1154,6 +1256,7 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
    plan.entry  = 0.0;
    plan.sl     = 0.0;
    plan.tp     = 0.0;
+   plan.count  = g_positionCount;
    plan.lots   = 0.0;
    plan.valid  = false;
    plan.reason = "";
@@ -1232,7 +1335,8 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
       return;
      }
 
-   //--- SL a PT musi respektovat stop level brokera
+   //--- SL a PT musi respektovat stop level brokera. Kontroluje se PT
+   //--- 1. pozice - PT dalsich pozic je od vstupu jeste dal.
    if(slReal < stops)
      {
       plan.reason = StringFormat("SL < stop-level brokera (%.0f b)", stops / _Point);
@@ -1244,10 +1348,18 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
       return;
      }
 
+   //--- U SELL muze nejvzdalenejsi PT (k x PT) spadnout pod nulu
+   if(plan.tp > 0.0 && PlanTakeProfit(plan, plan.count) <= 0.0)
+     {
+      plan.reason = StringFormat("PT %d. pozice je pod nulou", plan.count);
+      return;
+     }
+
    //--- Objem se pocita ze skutecne vzdalenosti SL, ne z nominalni -
-   //--- jinak by realna ztrata na SL neodpovidala zadanemu procentu
+   //--- jinak by realna ztrata na SL neodpovidala zadanemu procentu.
+   //--- Riziko se deli mezi vsechny pozice vstupu.
    string lotReason;
-   plan.lots = CalcLot(slReal, lotReason);
+   plan.lots = CalcLot(slReal, g_riskPercent / plan.count, lotReason);
    if(plan.lots <= 0.0)
      {
       plan.reason = lotReason;
@@ -1255,9 +1367,10 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
      }
 
    //--- Marze se overi predem - "nedostatek penez" od serveru by prisel
-   //--- az po kliknuti a bez cisel
+   //--- az po kliknuti a bez cisel. Pocita se za vsechny pozice dohromady.
    double margin = 0.0;
-   if(OrderCalcMargin(isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol, plan.lots, plan.entry, margin))
+   if(OrderCalcMargin(isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, _Symbol,
+                      plan.lots * plan.count, plan.entry, margin))
      {
       const double free = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
       if(margin > free)
@@ -1268,6 +1381,20 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
      }
 
    plan.valid = true;
+  }
+
+//+------------------------------------------------------------------+
+//| Cena PT k-te pozice navrhu.                                      |
+//|  plan - navrh vstupu, k - poradi pozice (1 = prvni)              |
+//| Pozice k ma PT v k-nasobku vzdalenosti PT 1. pozice (ta uz je    |
+//| zarovnana na krok kotace). Vraci 0 bez PT.                       |
+//+------------------------------------------------------------------+
+double PlanTakeProfit(const SEntryPlan &plan, const int k)
+  {
+   if(plan.tp <= 0.0 || k == 1)
+      return(plan.tp);
+   const double dist = k * MathAbs(plan.tp - plan.entry);
+   return(NormalizePrice(plan.isBuy ? plan.entry + dist : plan.entry - dist));
   }
 
 //+------------------------------------------------------------------+
@@ -1303,84 +1430,124 @@ bool FindSent(const ulong ticket, double &slDist, double &tpDist)
   }
 
 //+------------------------------------------------------------------+
-//| Odesle prikaz podle navrhu (STOP, LIMIT nebo MARKET).            |
+//| Platnost prikazu podle InpExpirationMinutes.                     |
+//|  pending    - jde o cekajici prikaz (MARKET platnost nema)       |
+//|  typeTime, expiration - out: typ platnosti a cas vyprseni        |
+//| Platnost do casu jen tam, kde ji symbol podporuje - jinak GTC.   |
+//+------------------------------------------------------------------+
+void OrderExpiration(const bool pending, ENUM_ORDER_TYPE_TIME &typeTime, datetime &expiration)
+  {
+   typeTime   = ORDER_TIME_GTC;
+   expiration = 0;
+   if(!pending || InpExpirationMinutes <= 0)
+      return;
+
+   const long expModes = SymbolInfoInteger(_Symbol, SYMBOL_EXPIRATION_MODE);
+   if((expModes & SYMBOL_EXPIRATION_SPECIFIED) != 0)
+     {
+      typeTime   = ORDER_TIME_SPECIFIED;
+      expiration = TimeCurrent() + InpExpirationMinutes * 60;
+     }
+   else
+      Print("PQE: symbol nepodporuje platnost příkazu do času, příkaz je do zrušení.");
+  }
+
+//+------------------------------------------------------------------+
+//| Odesle jeden prikaz navrhu (jednu pozici vstupu).                |
+//|  plan    - platny navrh vstupu                                   |
+//|  tp      - PT teto pozice (0 = bez PT)                           |
+//|  comment - komentar prikazu                                      |
+//|  typeTime, expiration - platnost cekajiciho prikazu              |
+//| Vraci navratovou hodnotu metody CTrade (prijeti hlida volajici). |
+//+------------------------------------------------------------------+
+bool SendPlanOrder(const SEntryPlan &plan, const double tp, const string comment,
+                   const ENUM_ORDER_TYPE_TIME typeTime, const datetime expiration)
+  {
+   // Cena 0 = CTrade pouzije aktualni Ask/Bid v okamziku odeslani
+   if(plan.mode == PQE_MODE_MARKET)
+      return(g_trade.PositionOpen(_Symbol, plan.isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
+                                  plan.lots, 0.0, plan.sl, tp, comment));
+
+   // STOP i LIMIT jsou cekajici prikazy na kliknute cene, lisi se jen typem
+   const ENUM_ORDER_TYPE type = (plan.mode == PQE_MODE_STOP)
+                                ? (plan.isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP)
+                                : (plan.isBuy ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT);
+   return(g_trade.OrderOpen(_Symbol, type, plan.lots, 0.0, plan.entry, plan.sl, tp,
+                            typeTime, expiration, comment));
+  }
+
+//+------------------------------------------------------------------+
+//| Odesle prikazy podle navrhu (STOP, LIMIT nebo MARKET).           |
 //|  plan - platny navrh vstupu                                      |
-//| Vysledek se zapise do panelu i do logu. Vraci true pri uspechu.  |
+//| Pro kazdou pozici vstupu jeden prikaz: stejny objem a SL, pozice |
+//| k ma PT = k x PT. Pri prvnim odmitnuti se dalsi pozice uz        |
+//| neposilaji (duvod by byl nejspis stejny). Vysledek se zapise do  |
+//| panelu i do logu. Vraci true, kdyz prosly vsechny pozice.        |
 //+------------------------------------------------------------------+
 bool ExecutePlan(SEntryPlan &plan)
   {
    const string dir      = plan.isBuy ? "BUY" : "SELL";
    const string modeName = ModeName(plan.mode);
    const bool   market   = (plan.mode == PQE_MODE_MARKET);
-   bool ok = false;
 
-   if(market)
-     {
-      // Cena 0 = CTrade pouzije aktualni Ask/Bid v okamziku odeslani
-      ok = plan.isBuy
-           ? g_trade.Buy(plan.lots, _Symbol, 0.0, plan.sl, plan.tp, "PQE BUY")
-           : g_trade.Sell(plan.lots, _Symbol, 0.0, plan.sl, plan.tp, "PQE SELL");
-     }
-   else
-     {
-      // Platnost do casu jen tam, kde ji symbol podporuje - jinak GTC
-      ENUM_ORDER_TYPE_TIME typeTime = ORDER_TIME_GTC;
-      datetime expiration = 0;
-      if(InpExpirationMinutes > 0)
-        {
-         const long expModes = SymbolInfoInteger(_Symbol, SYMBOL_EXPIRATION_MODE);
-         if((expModes & SYMBOL_EXPIRATION_SPECIFIED) != 0)
-           {
-            typeTime   = ORDER_TIME_SPECIFIED;
-            expiration = TimeCurrent() + InpExpirationMinutes * 60;
-           }
-         else
-            Print("PQE: symbol nepodporuje platnost příkazu do času, příkaz je do zrušení.");
-        }
+   ENUM_ORDER_TYPE_TIME typeTime;
+   datetime expiration;
+   OrderExpiration(!market, typeTime, expiration);
 
-      // STOP i LIMIT jsou cekajici prikazy na kliknute cene, lisi se jen typem
-      if(plan.mode == PQE_MODE_STOP)
-         ok = plan.isBuy
-              ? g_trade.BuyStop(plan.lots, plan.entry, _Symbol, plan.sl, plan.tp,
-                                typeTime, expiration, "PQE BUYSTOP")
-              : g_trade.SellStop(plan.lots, plan.entry, _Symbol, plan.sl, plan.tp,
-                                 typeTime, expiration, "PQE SELLSTOP");
-      else
-         ok = plan.isBuy
-              ? g_trade.BuyLimit(plan.lots, plan.entry, _Symbol, plan.sl, plan.tp,
-                                 typeTime, expiration, "PQE BUYLIMIT")
-              : g_trade.SellLimit(plan.lots, plan.entry, _Symbol, plan.sl, plan.tp,
-                                  typeTime, expiration, "PQE SELLLIMIT");
-     }
-
-   if(!RequestAccepted(ok))
-     {
-      g_lastEvent = StringFormat("%s selhal: %d %s", dir, g_trade.ResultRetcode(),
-                                 g_trade.ResultRetcodeDescription());
-      Print("PQE: ", g_lastEvent);
-      return(false);
-     }
-
-   const ulong  ticket = g_trade.ResultOrder();
-   const double price  = (market && g_trade.ResultPrice() > 0.0) ? g_trade.ResultPrice() : plan.entry;
-
-   // Vzdalenosti pro dorovnani SL/PT po vyplneni. Berou se z navrhu, ne
+   // Vzdalenost SL pro dorovnani po vyplneni. Bere se z navrhu, ne
    // z formulare - navrh uz ma ceny zarovnane na krok kotace a dorovnani
    // musi vychazet ze stejnych hodnot, jake se poslaly na server.
    const double slDist = MathAbs(plan.entry - plan.sl);
-   const double tpDist = (plan.tp > 0.0) ? MathAbs(plan.tp - plan.entry) : 0.0;
-   RememberSent(ticket, slDist, tpDist);
 
-   // Kratky tvar - radek panelu ma omezenou sirku
-   g_lastEvent = StringFormat("%s %s #%I64u %s %s lot",
-                              dir, modeName, ticket,
-                              DoubleToString(price, _Digits), FormatLots(plan.lots));
-   PrintFormat("PQE: %s %s #%I64u @ %s  SL %s  PT %s  %s lot  (riziko %.2f %%)",
-               dir, modeName, ticket,
-               DoubleToString(price, _Digits), DoubleToString(plan.sl, _Digits),
-               plan.tp > 0.0 ? DoubleToString(plan.tp, _Digits) : "-",
-               FormatLots(plan.lots), g_riskPercent);
-   return(true);
+   //--- Smycka konci pri prvnim odmitnuti, takze k - 1 = pocet otevrenych
+   int    k           = 1;
+   ulong  firstTicket = 0;
+   double firstPrice  = 0.0;
+   for(; k <= plan.count; k++)
+     {
+      //--- Komentar odlisi pozice vstupu: "PQE BUYSTOP 2/3"
+      const double tp      = PlanTakeProfit(plan, k);
+      const string comment = "PQE " + dir + (market ? "" : modeName) +
+                             (plan.count > 1 ? StringFormat(" %d/%d", k, plan.count) : "");
+      if(!RequestAccepted(SendPlanOrder(plan, tp, comment, typeTime, expiration)))
+        {
+         PrintFormat("PQE: %s %s %d/%d selhal: %d %s", dir, modeName, k, plan.count,
+                     g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+         break;
+        }
+
+      const ulong  ticket = g_trade.ResultOrder();
+      const double price  = (market && g_trade.ResultPrice() > 0.0) ? g_trade.ResultPrice() : plan.entry;
+      RememberSent(ticket, slDist, (tp > 0.0) ? MathAbs(tp - plan.entry) : 0.0);
+
+      PrintFormat("PQE: %s %s %d/%d #%I64u @ %s  SL %s  PT %s  %s lot  (riziko %.2f %%)",
+                  dir, modeName, k, plan.count, ticket,
+                  DoubleToString(price, _Digits), DoubleToString(plan.sl, _Digits),
+                  tp > 0.0 ? DoubleToString(tp, _Digits) : "-",
+                  FormatLots(plan.lots), g_riskPercent / plan.count);
+      if(k == 1)
+        {
+         firstTicket = ticket;
+         firstPrice  = price;
+        }
+     }
+   const int opened = k - 1;
+
+   //--- Kratky tvar - radek panelu ma omezenou sirku; pri oriznuti
+   //--- prijde o konec cisla ticketu, ne o objem a cenu. Selhani uz
+   //--- je v logu z cyklu.
+   if(opened == 0)
+      g_lastEvent = StringFormat("%s selhal: %d %s", dir, g_trade.ResultRetcode(),
+                                 g_trade.ResultRetcodeDescription());
+   else
+      if(opened < plan.count)
+         g_lastEvent = StringFormat("%s %s: otevřeno jen %d/%d, pak %d", dir, modeName,
+                                    opened, plan.count, g_trade.ResultRetcode());
+      else
+         g_lastEvent = StringFormat("%s %s %s lot @ %s #%I64u", dir, modeName,
+                                    FormatLotsCount(plan.lots, plan.count),
+                                    DoubleToString(firstPrice, _Digits), firstTicket);
+   return(opened == plan.count);
   }
 
 //--- Patri prave vybrany prikaz expertovi? (symbol + magic)
@@ -1725,7 +1892,7 @@ bool ClosePositionPart(const ulong ticket, const double volume, const double cur
       return(CloseOnePosition(ticket, failed));
 
    bool sent = false;
-   if(AccountInfoInteger(ACCOUNT_MARGIN_MODE) == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+   if(IsHedgingAccount())
       sent = g_trade.PositionClosePartial(ticket, volume);
    else
       if(PositionSelectByTicket(ticket))
@@ -1966,23 +2133,34 @@ void UpdatePreview()
    const color  dirColor = plan.isBuy ? InpColorBuy : InpColorSell;
    const color  lineClr  = plan.valid ? dirColor : PQE_COLOR_OFF;
 
+   //--- Popisek: objem jde pred ceny, aby ho pri vice pozicich neuriznul
+   //--- limit delky textu (PT ukazuje rozsah od 1. do posledni pozice)
    string text;
    if(!plan.valid)
       text = dir + ": " + plan.reason;
    else
-      text = StringFormat("%s %s @ %s  SL %s  PT %s  %s lot",
-                          dir, ModeName(plan.mode),
+     {
+      string tpText = "-";
+      if(plan.tp > 0.0)
+        {
+         tpText = DoubleToString(plan.tp, _Digits);
+         if(plan.count > 1)
+            tpText += ".." + DoubleToString(PlanTakeProfit(plan, plan.count), _Digits);
+        }
+      text = StringFormat("%s %s %s lot @ %s SL %s PT %s",
+                          dir, ModeName(plan.mode), FormatLotsCount(plan.lots, plan.count),
                           DoubleToString(plan.entry, _Digits),
-                          DoubleToString(plan.sl, _Digits),
-                          plan.tp > 0.0 ? DoubleToString(plan.tp, _Digits) : "-",
-                          FormatLots(plan.lots));
+                          DoubleToString(plan.sl, _Digits), tpText);
+     }
 
    //--- Nezmeneny nahled se nekresli znovu. OnTick chodi pri zpravach
    //--- i mnohokrat za sekundu a prekresleni celeho grafu je drahe;
    //--- popisek sleduje kurzor, takze do shody patri i jeho poloha.
+   //--- Linka PT je jedna na pozici (u neplatneho navrhu pocet text neobsahuje).
+   const int tpLines = (plan.tp > 0.0) ? plan.count : 0;
    if(g_pvShown && text == g_pvText && g_mouseX == g_pvX && g_mouseY == g_pvY &&
-      SamePrice(plan.entry, g_pvEntry) && SamePrice(plan.sl, g_pvSL) &&
-      SamePrice(plan.tp, g_pvTP))
+      tpLines == g_pvTpLines && SamePrice(plan.entry, g_pvEntry) &&
+      SamePrice(plan.sl, g_pvSL) && SamePrice(plan.tp, g_pvTP))
       return;
 
    //--- Styl linky rika, jaky prikaz klik zada: plna = MARKET,
@@ -1997,10 +2175,13 @@ void UpdatePreview()
    else
       ObjectDelete(0, PQE_OBJ_PV_SL);
 
-   if(plan.tp > 0.0)
-      DrawHLine(PQE_OBJ_PV_TP, plan.tp, InpColorTP, STYLE_DOT, 1);
-   else
-      ObjectDelete(0, PQE_OBJ_PV_TP);
+   //--- Linka PT pro kazdou pozici vstupu (k x PT). Mazou se jen linky,
+   //--- ktere v grafu opravdu jsou - nahled se kresli pri kazdem pohybu
+   //--- mysi. DeletePreview pri mazani vsech linek nuluje g_pvTpLines.
+   for(int k = 1; k <= tpLines; k++)
+      DrawHLine(PreviewTpName(k), PlanTakeProfit(plan, k), InpColorTP, STYLE_DOT, 1);
+   for(int k = tpLines + 1; k <= g_pvTpLines; k++)
+      ObjectDelete(0, PreviewTpName(k));
 
    DrawLabel(PQE_OBJ_PV_LABEL, g_mouseX + Dpi(16), g_mouseY + Dpi(18), Fit(text), lineClr);
 
@@ -2009,6 +2190,7 @@ void UpdatePreview()
    g_pvEntry = plan.entry;
    g_pvSL    = plan.sl;
    g_pvTP    = plan.tp;
+   g_pvTpLines = tpLines;
    g_pvText  = text;
    g_pvX     = g_mouseX;
    g_pvY     = g_mouseY;
@@ -2016,17 +2198,25 @@ void UpdatePreview()
    ChartRedraw();
   }
 
+//--- Jmeno linky PT k-te pozice v nahledu: PV_TP, PV_TP2, PV_TP3
+string PreviewTpName(const int k)
+  {
+   return(k == 1 ? PQE_OBJ_PV_TP : PQE_OBJ_PV_TP + IntegerToString(k));
+  }
+
 //--- Odstrani vsechny objekty nahledu vstupu
 void DeletePreview()
   {
    ObjectDelete(0, PQE_OBJ_PV_ENTRY);
    ObjectDelete(0, PQE_OBJ_PV_SL);
-   ObjectDelete(0, PQE_OBJ_PV_TP);
+   for(int k = 1; k <= PQE_MAX_POSITIONS; k++)
+      ObjectDelete(0, PreviewTpName(k));
    ObjectDelete(0, PQE_OBJ_PV_LABEL);
 
    //--- Pamet vykresleneho nahledu uz neplati
-   g_pvShown = false;
-   g_pvText  = "";
+   g_pvShown   = false;
+   g_pvText    = "";
+   g_pvTpLines = 0;
   }
 
 //+------------------------------------------------------------------+
@@ -2214,7 +2404,8 @@ int Dpi(const double base)
 //+------------------------------------------------------------------+
 //| Spocte rozvrzeni panelu: polohu vsech radku i celkovou vysku.    |
 //|  lo - out: rozvrzeni                                             |
-//| Poradi shora: titulek, tri pole formulare, predvolby rizika, pet |
+//| Poradi shora: titulek, tri pole formulare, predvolby rizika,     |
+//| pocet pozic (1 / 2 / 3), pet                                     |
 //| rad tlacitek (BUYSTOP / SELLSTOP, BUY / SELL, BUY / SELL MARKET, |
 //| zavirani, castecne zavreni) a stavove radky. Vyska vznika        |
 //| soucasne s polohami, takze pozadi panelu i IsInsidePanel vzdy    |
@@ -2246,6 +2437,8 @@ void BuildLayout(SPanelLayout &lo)
       y += rowH;
      }
    lo.yRisk = y;
+   y += Px(PQE_RISK_BTN_H) + lo.gap;
+   lo.yCount = y;
    y += Px(PQE_RISK_BTN_H) + lo.gap;
    lo.yStops = y;
    y += lo.btnH + lo.gap;
@@ -2355,6 +2548,9 @@ void UpdatePanel()
    //--- Predvolby rizika (vybrana je zvyraznena)
    DrawRiskButtons(x, lo.yRisk, inner);
 
+   //--- Pocet pozic na jeden vstup (vybrany je zvyrazneny)
+   DrawCountButtons(x, lo.yCount, inner);
+
    //--- Tri rady vstupu po dvou tlacitcich: BUYSTOP / SELLSTOP (jen STOP
    //--- nebo MARKET), pod nimi BUY / SELL (STOP, LIMIT nebo MARKET)
    //--- a nakonec BUY MARKET / SELL MARKET (za trh hned, bez kliku do grafu)
@@ -2407,7 +2603,8 @@ void BuildPanelState(SPanelState &st)
    st.canClose  = ClosingAllowed(st.closeReason);
    st.balance   = AccountInfoDouble(ACCOUNT_BALANCE);
    st.slDist    = g_slPoints * _Point;
-   st.lots      = CalcLot(st.slDist, st.lotReason);
+   // Riziko z formulare se deli mezi vsechny pozice vstupu
+   st.lots      = CalcLot(st.slDist, g_riskPercent / g_positionCount, st.lotReason);
   }
 
 //+------------------------------------------------------------------+
@@ -2430,23 +2627,26 @@ void BuildStatusLines(string &lines[], const SPanelState &st)
          lines[0] = "stav: " + (blocked != "" ? blocked : "připraven - stiskni BUY nebo SELL");
 
    //--- Objem z rizika pro aktualni SL a zustatek (texty jsou kratke,
-   //--- radek panelu ma jen PanelMaxChars znaku)
+   //--- radek panelu ma jen PanelMaxChars znaku). Pri vice pozicich
+   //--- objem jedne pozice x pocet, riziko za vsechny dohromady.
    if(st.lots > 0.0)
      {
-      const double risk = st.lots * LossPerLot(st.slDist);
+      const double risk = g_positionCount * st.lots * LossPerLot(st.slDist);
       lines[1] = StringFormat("objem %s lot = %.2f %s (%.2f %%)",
-                              FormatLots(st.lots), risk, AccountInfoString(ACCOUNT_CURRENCY),
+                              FormatLotsCount(st.lots, g_positionCount), risk,
+                              AccountInfoString(ACCOUNT_CURRENCY),
                               st.balance > 0.0 ? risk / st.balance * 100.0 : 0.0);
      }
    else
       lines[1] = "objem: " + st.lotReason;
 
-   //--- Vzdalenosti SL a PT prevedene na cenu
+   //--- Vzdalenosti SL a PT prevedene na cenu; pri vice pozicich se
+   //--- misto ceny vypisou body PT vsech pozic (na cenu se nevejdou)
+   string tpText = TpPointsText(g_positionCount);
+   if(g_tpPoints > 0 && g_positionCount == 1)
+      tpText += " = " + DoubleToString(g_tpPoints * _Point, _Digits);
    lines[2] = StringFormat("SL %d b = %s   PT %s",
-                           g_slPoints, DoubleToString(st.slDist, _Digits),
-                           g_tpPoints > 0
-                           ? StringFormat("%d b = %s", g_tpPoints, DoubleToString(g_tpPoints * _Point, _Digits))
-                           : "bez PT");
+                           g_slPoints, DoubleToString(st.slDist, _Digits), tpText);
 
    //--- Co uz na trhu lezi
    lines[3] = StringFormat("příkazy %d  pozice %d  zůstatek %.2f",
@@ -2637,8 +2837,9 @@ void DrawMarketButton(const string name, const bool isBuy,
       tooltip = "Nelze obchodovat: " + blocked;
    else
       tooltip = StringFormat("Hned otevře %s za trh (%s), %s lot, SL %d b, PT %s - bez kliku do grafu.",
-                             dir, isBuy ? "Ask" : "Bid", FormatLots(st.lots), g_slPoints,
-                             g_tpPoints > 0 ? IntegerToString(g_tpPoints) + " b" : "bez PT");
+                             dir, isBuy ? "Ask" : "Bid", FormatLotsCount(st.lots, g_positionCount),
+                             g_slPoints,
+                             TpPointsText(g_positionCount));
 
    const color bg = (blocked != "") ? PQE_COLOR_BTN_OFF
                     : (isBuy ? PQE_COLOR_BTN_MKT_BUY : PQE_COLOR_BTN_MKT_SELL);
@@ -2707,6 +2908,42 @@ void DrawRiskButtons(const int x, const int y, const int w)
                  selected ? PQE_COLOR_BTN_RISK_ON : PQE_COLOR_BTN_RISK_OFF,
                  StringFormat("Nastaví riziko %.2f %% zůstatku na obchod.", g_riskPresets[i]),
                  0);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli radu tlacitek poctu pozic na jeden vstup (1 / 2 / 3).   |
+//| Zvyraznene je zvolene tlacitko. Na netting uctu jsou 2 a 3 sede  |
+//| a duvod maji v bubline (pozice by se sloucily do jedne).         |
+//|  x, y - poloha rady, w - celkova sirka rady v pixelech           |
+//+------------------------------------------------------------------+
+void DrawCountButtons(const int x, const int y, const int w)
+  {
+   const int gap  = Px(PQE_RISK_BTN_GAP);
+   const int btnH = Px(PQE_RISK_BTN_H);
+
+   for(int i = 0; i < PQE_MAX_POSITIONS; i++)
+     {
+      const int    count   = i + 1;
+      const string blocked = CountBlockReason(count);
+      int bx, bw;
+      RowCell(x, w, PQE_MAX_POSITIONS, gap, i, bx, bw);
+
+      //--- Bublina rekne, jake PT pozice dostanou a jak se deli riziko
+      string tooltip;
+      if(blocked != "")
+         tooltip = "Nelze: " + blocked + " (netting by pozice sloučil do jedné).";
+      else
+         if(count == 1)
+            tooltip = "Vstup otevře jednu pozici s PT z formuláře.";
+         else
+            tooltip = StringFormat("Vstup otevře %d pozice s PT %s, SL všem stejný; riziko se dělí mezi pozice.",
+                                   count, TpPointsText(count));
+
+      const color bg = (count == g_positionCount) ? PQE_COLOR_BTN_RISK_ON
+                       : (blocked != "") ? PQE_COLOR_BTN_OFF : PQE_COLOR_BTN_RISK_OFF;
+      DrawButton(PQE_OBJ_BTN_COUNT + IntegerToString(i), bx, y, bw, btnH,
+                 IntegerToString(count), bg, tooltip, 0);
      }
   }
 
