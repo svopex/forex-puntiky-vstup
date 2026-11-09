@@ -8,8 +8,9 @@ vznikne **STOP příkaz**, **LIMIT příkaz**, nebo **MARKET příkaz** (tlačí
 a profit targetem** a s objemem dopočítaným z **rizika v procentech zůstatku
 účtu** (výchozí 1 %). Tlačítka `BUY MARKET` / `SELL MARKET` vstoupí za trh
 **hned jedním kliknutím**, bez výběru místa v grafu. Řada tlačítek `ZAV …`
-zavře zadané procento otevřené pozice a dvě řady pod ní **posunou SL nebo
-celé čekající příkazy** nahoru či dolů. Obchoduje se vždy symbol grafu, na
+zavře zadané procento otevřené pozice, dvě řady pod ní **posunou SL nebo
+celé čekající příkazy** nahoru či dolů a poslední řada je **sjednotí na
+průměrnou úroveň**. Obchoduje se vždy symbol grafu, na
 kterém expert běží.
 
 Expert sám nikdy nic neobchoduje — dělá jen to, co se mu klikne.
@@ -175,6 +176,23 @@ doladění, střední a velký krok — výchozí 10 / 50 / 200 bodů (u XAUUSD
 - Bez potvrzování; tlačítka, která v daném režimu nemají co posunout, jsou
   šedá s důvodem v bublině.
 
+### Sjednocení SL a čekajících příkazů
+
+Pod řadami posunu jsou tlačítka `SJEDNOTIT SL` a `SJEDNOTIT PO`. Když SL
+(nebo ceny čekajících příkazů) neleží na stejné úrovni, srovnají je na
+jednu — **prostý průměr** jejich úrovní:
+
+| Tlačítko | Co udělá |
+|---|---|
+| `SJEDNOTIT SL` | SL všech pozic i čekajících příkazů experta na průměrný SL — **zvlášť nákupy (BUY) a zvlášť prodeje (SELL)**; vstup, PT a objem zůstávají |
+| `SJEDNOTIT PO` | čekající příkazy na průměrnou cenu — **zvlášť každý typ** (BUY STOP, BUY LIMIT, SELL STOP, SELL LIMIT); SL a PT se posunou s příkazem o stejný kus |
+
+- Co už na průměru je, se nemění; obchody bez SL `SJEDNOTIT SL` přeskočí.
+- Platí stejné kontroly jako u posunu (SL dál než stop-level, příkaz na
+  správné straně trhu); co nejde, se počítá jako `selhalo` s důvodem v logu.
+- Tlačítko je šedé, dokud nejsou aspoň dva obchody (pro `PO` dva čekající
+  příkazy).
+
 SL a PT se měří **od vstupní ceny** v bodech (`_Point` symbolu — u XAUUSD se
 dvěma desetinnými místy je 300 bodů = 3,00 USD). Panel na řádku `SL … PT …`
 vždy ukazuje přepočet na cenu.
@@ -249,6 +267,7 @@ Riziko (%)           [1.00    ]
 [ZAV 100%] [ZAV 50%] [ZAV 25%] [ZAV 15%]  ← díl z každé pozice
 [ SL ] [ +10 ] [ +50 ] [ +200 ]           ← SL / PO = co se posouvá
 [ PO ] [ -10 ] [ -50 ] [ -200 ]           ← 1. řada nahoru, 2. dolů
+[ SJEDNOTIT SL ] [ SJEDNOTIT PO ]         ← srovnat na průměr
 stav: připraven - stiskni BUY nebo SELL
 objem 0.33 lot = 99.00 USD (0.99 %)
 SL 300 b = 3.00   PT 300 b = 3.00
@@ -324,7 +343,7 @@ panelu. Před každým nasazením nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.70**
+**Aktuální verze: 1.80**
 
 ## Struktura repozitáře
 

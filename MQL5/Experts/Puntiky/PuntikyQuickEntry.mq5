@@ -27,13 +27,16 @@
 //|  velky krok nahoru (1. rada) nebo dolu (2. rada) bud SL vsech    |
 //|  pozic a prikazu experta, nebo cele cekajici prikazy; rezim SL / |
 //|  PO se prepina prvnimi tlacitky rad.                             |
+//|  SJEDNOTIT SL / SJEDNOTIT PO srovna ruzne SL (zvlast BUY a SELL) |
+//|  nebo ceny cekajicich prikazu (zvlast kazdy typ) na jejich       |
+//|  prumernou uroven.                                               |
 //+------------------------------------------------------------------+
 // Verze experta - zvysuje se pred kazdym nasazenim (viz README, Verzovani)
-#define EA_VERSION "1.70"
+#define EA_VERSION "1.80"
 
 #property copyright "Puntiky"
 #property version   EA_VERSION
-#property description "Rychlý vstup: BUY/SELL (STOP, LIMIT nebo MARKET) či BUYSTOP/SELLSTOP + klik do grafu, nebo BUY/SELL MARKET hned; 1-3 pozice s PT, 2xPT, 3xPT; částečné zavření pozice; posun SL a čekajících příkazů"
+#property description "Rychlý vstup: BUY/SELL (STOP, LIMIT nebo MARKET) či BUYSTOP/SELLSTOP + klik do grafu, nebo BUY/SELL MARKET hned; 1-3 pozice s PT, 2xPT, 3xPT; částečné zavření pozice; posun a sjednocení SL a čekajících příkazů"
 
 // Vychozi predvolby tlacitek - pouzije je vstup i nahradni rada, kdyz
 // vstup neobsahuje zadnou platnou hodnotu
@@ -102,6 +105,8 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_MAX_CLOSE_PRESETS 4          // nejvyse tolik tlacitek castecneho zavreni (popisky jsou delsi)
 #define PQE_MAX_POSITIONS    3           // nejvyse tolik pozic na jeden vstup (tlacitka 1 / 2 / 3)
 #define PQE_MOVE_STEPS       3           // kroky posunu v rade (maly, stredni, velky)
+#define PQE_SL_GROUPS        2           // skupiny sjednoceni SL: nakupy, prodeje
+#define PQE_PENDING_TYPES    4           // skupiny sjednoceni prikazu: BUY/SELL LIMIT, BUY/SELL STOP
 #define PQE_RISK_EPS         0.005       // tolerance shody rizika s predvolbou (%)
 #define PQE_MAX_POINTS       1000000     // horni mez SL / PT v bodech (chrani prevod na int)
 #define PQE_MAX_RISK_PCT     100.0       // horni mez rizika na obchod (% zustatku)
@@ -135,6 +140,7 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_COLOR_BTN_PARTIAL   C'130,70,0'  // tlacitka castecneho zavreni (je otevrena prave jedna pozice)
 #define PQE_COLOR_BTN_MOVE_UP   C'30,90,60'  // posun nahoru
 #define PQE_COLOR_BTN_MOVE_DOWN C'110,45,45' // posun dolu
+#define PQE_COLOR_BTN_CONSOLIDATE C'90,60,130' // sjednoceni SL / cekajicich prikazu
 #define PQE_COLOR_BTN_CANCEL C'120,80,0'    // tlacitko ZRUSIT (probiha vyber mista vstupu)
 #define PQE_COLOR_BTN_CANCEL_ORD C'120,80,0' // tlacitko ZRUSIT PRIKAZY (lezi cekajici prikaz)
 #define PQE_COLOR_BTN_CLOSE_ONE  C'150,50,0' // tlacitko ZAVRIT 1 (je otevrena pozice)
@@ -166,6 +172,8 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_OBJ_BTN_MOVE_PO       (PQE_PREFIX + "BTN_MVMODE_PO") // rezim posunu: cekajici prikazy
 #define PQE_OBJ_BTN_MOVE_UP       (PQE_PREFIX + "BTN_MVUP_")     // + krok posunu nahoru (0 = maly)
 #define PQE_OBJ_BTN_MOVE_DOWN     (PQE_PREFIX + "BTN_MVDN_")     // + krok posunu dolu (0 = maly)
+#define PQE_OBJ_BTN_CONS_SL       (PQE_PREFIX + "BTN_CONS_SL")   // sjednotit SL na prumer
+#define PQE_OBJ_BTN_CONS_PO       (PQE_PREFIX + "BTN_CONS_PO")   // sjednotit ceny cekajicich prikazu na prumer
 #define PQE_OBJ_BTN_MEASURE       (PQE_PREFIX + "BTN_MEASURE")   // "nastav" - mereni SL/PT v grafu
 #define PQE_OBJ_STATUS       (PQE_PREFIX + "STATUS_")    // + poradi radku
 #define PQE_OBJ_PV_ENTRY     (PQE_PREFIX + "PV_ENTRY")
@@ -299,6 +307,7 @@ struct SPanelLayout
    int               yPartial;     // rada tlacitek castecneho zavreni
    int               yMoveUp;      // rada posunu SL / prikazu nahoru
    int               yMoveDown;    // rada posunu SL / prikazu dolu
+   int               yConsolidate; // rada SJEDNOTIT SL / SJEDNOTIT PO
    int               yStatus;      // prvni stavovy radek
   };
 
@@ -560,6 +569,13 @@ void OnPanelButton(const string name)
    if(name == PQE_OBJ_BTN_MEASURE)
      {
       OnMeasureButton();
+      return;
+     }
+
+   //--- Sjednoceni SL nebo cen cekajicich prikazu na prumer
+   if(name == PQE_OBJ_BTN_CONS_SL || name == PQE_OBJ_BTN_CONS_PO)
+     {
+      OnConsolidateButton(name == PQE_OBJ_BTN_CONS_PO);
       return;
      }
 
@@ -1967,7 +1983,7 @@ bool ClosePositionPart(const ulong ticket, const double volume, const double cur
       sent = g_trade.PositionClosePartial(ticket, volume);
    else
       if(PositionSelectByTicket(ticket))
-         sent = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+         sent = IsBuyPosition()
                 ? g_trade.Sell(volume, _Symbol, 0.0, 0.0, 0.0, "PQE PARTIAL")
                 : g_trade.Buy(volume, _Symbol, 0.0, 0.0, 0.0, "PQE PARTIAL");
    if(RequestAccepted(sent))
@@ -2062,6 +2078,24 @@ bool IsBuyOrderType(const long type)
    return(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT);
   }
 
+//--- Je typ cekajiciho prikazu STOP? (BUY STOP / SELL STOP)
+bool IsStopOrderType(const long type)
+  {
+   return(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_SELL_STOP);
+  }
+
+//--- Je prave vybrana pozice nakupni?
+bool IsBuyPosition()
+  {
+   return(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+  }
+
+//--- Skupina sjednoceni SL: 0 = nakupy, 1 = prodeje (BUY a SELL zvlast)
+int SlGroupIndex(const bool isBuy)
+  {
+   return(isBuy ? 0 : 1);
+  }
+
 //+------------------------------------------------------------------+
 //| Zapise do logu odmitnuty posun a zapocita neuspech.              |
 //|  failed - in/out: pocet neuspechu                                |
@@ -2114,74 +2148,181 @@ bool ModifyOrderLevels(const ulong ticket, const double price, const double sl, 
   }
 
 //+------------------------------------------------------------------+
-//| Posune SL vsech pozic a cekajicich prikazu experta.              |
-//|  delta  - posun v cene (kladny = nahoru)                         |
-//|  failed - in/out: pocet neuspechu                                |
-//| Pozice a prikazy bez SL se preskoci. SL musi zustat na ztratove  |
-//| strane dal nez stop level (StopLossValid) - u pozice od ceny     |
-//| zavreni (BUY Bid, SELL Ask), u prikazu od jeho vstupu. Objem se  |
-//| nemeni, riziko obchodu se tedy posunem meni. Vraci pocet posunu. |
+//| Skupina sjednoceni cekajiciho prikazu podle typu (-1 = jiny typ).|
+//| BUY LIMIT = 0, SELL LIMIT = 1, BUY STOP = 2, SELL STOP = 3 - typy|
+//| jdou v ENUM_ORDER_TYPE po sobe. Jine typy (STOP LIMIT) expert    |
+//| nezadava a sjednoceni je preskoci.                               |
 //+------------------------------------------------------------------+
-int MoveStopLosses(const double delta, int &failed)
+int PendingTypeIndex(const long type)
   {
+   const long index = type - ORDER_TYPE_BUY_LIMIT;
+   return((index >= 0 && index < PQE_PENDING_TYPES) ? (int)index : -1);
+  }
+
+//--- Prumery skupin z nascitanych hodnot (0 = skupina bez obchodu)
+void GroupAverages(const double &sum[], const int &cnt[], const int groups, double &targets[])
+  {
+   ArrayResize(targets, groups);
+   for(int k = 0; k < groups; k++)
+      targets[k] = (cnt[k] > 0) ? NormalizePrice(sum[k] / cnt[k]) : 0.0;
+  }
+
+//+------------------------------------------------------------------+
+//| Prumerne SL pozic a cekajicich prikazu experta.                  |
+//|  targets - out: prumer SL pro kazdou skupinu (SlGroupIndex)      |
+//| BUY a SELL se prumeruji zvlast - spolecny prumer by nedaval      |
+//| smysl. Obchody bez SL se nepocitaji (stejny filtr jako upravy).  |
+//+------------------------------------------------------------------+
+void AverageStopLosses(double &targets[])
+  {
+   double sum[PQE_SL_GROUPS];
+   int    cnt[PQE_SL_GROUPS];
+   ArrayInitialize(sum, 0.0);
+   ArrayInitialize(cnt, 0);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(PositionGetTicket(i) == 0 || !IsOurPosition())
+         continue;
+      const double sl = PositionGetDouble(POSITION_SL);
+      if(sl <= 0.0)
+         continue;
+      const int k = SlGroupIndex(IsBuyPosition());
+      sum[k] += sl;
+      cnt[k]++;
+     }
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(OrderGetTicket(i) == 0 || !IsOurOrder())
+         continue;
+      const double sl = OrderGetDouble(ORDER_SL);
+      if(sl <= 0.0)
+         continue;
+      const int k = SlGroupIndex(IsBuyOrderType(OrderGetInteger(ORDER_TYPE)));
+      sum[k] += sl;
+      cnt[k]++;
+     }
+   GroupAverages(sum, cnt, PQE_SL_GROUPS, targets);
+  }
+
+//+------------------------------------------------------------------+
+//| Prumerne ceny cekajicich prikazu experta podle typu prikazu.     |
+//|  targets - out: prumer pro kazdy typ (PendingTypeIndex)          |
+//| Typy se prumeruji zvlast - prumer STOP nad trhem a LIMIT pod     |
+//| nim by padl do trhu, kde nejde zadat ani jeden.                  |
+//+------------------------------------------------------------------+
+void AveragePendingPrices(double &targets[])
+  {
+   double sum[PQE_PENDING_TYPES];
+   int    cnt[PQE_PENDING_TYPES];
+   ArrayInitialize(sum, 0.0);
+   ArrayInitialize(cnt, 0);
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(OrderGetTicket(i) == 0 || !IsOurOrder())
+         continue;
+      const int k = PendingTypeIndex(OrderGetInteger(ORDER_TYPE));
+      if(k < 0)
+         continue;
+      sum[k] += OrderGetDouble(ORDER_PRICE_OPEN);
+      cnt[k]++;
+     }
+   GroupAverages(sum, cnt, PQE_PENDING_TYPES, targets);
+  }
+
+//+------------------------------------------------------------------+
+//| Zmeni SL vsech pozic a cekajicich prikazu experta.               |
+//|  delta       - posun v cene (kladny = nahoru); pri sjednoceni 0  |
+//|  consolidate - true = SL na prumer sve skupiny (AverageStopLosses)|
+//|                misto posunu o delta                              |
+//|  failed      - in/out: pocet neuspechu                           |
+//| Obchody bez SL a SL, ktere uz na cili jsou, se preskoci. SL musi |
+//| zustat na ztratove strane dal nez stop level (StopLossValid) - u |
+//| pozice od ceny zavreni (BUY Bid, SELL Ask), u prikazu od jeho    |
+//| vstupu. Objem se nemeni, riziko se tedy meni. Vraci pocet zmen.  |
+//+------------------------------------------------------------------+
+int AdjustStopLosses(const double delta, const bool consolidate, int &failed)
+  {
+   double targets[];
+   if(consolidate)
+      AverageStopLosses(targets);
+
    const double stops = StopsLevelPrice();
    const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   int moved = 0;
+   int changed = 0;
 
    //--- Otevrene pozice
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       const ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !IsOurPosition() || PositionGetDouble(POSITION_SL) <= 0.0)
+      if(ticket == 0 || !IsOurPosition())
+         continue;
+      const double sl = PositionGetDouble(POSITION_SL);
+      if(sl <= 0.0)
          continue;
 
-      const bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
-      const double newSL = NormalizePrice(PositionGetDouble(POSITION_SL) + delta);
+      const bool   isBuy = IsBuyPosition();
+      const double newSL = consolidate ? targets[SlGroupIndex(isBuy)] : NormalizePrice(sl + delta);
+      if(SamePrice(newSL, sl))
+         continue;
       if(!StopLossValid(isBuy, isBuy ? bid : ask, newSL, stops))
          RejectMove(failed, "SL pozice", ticket, newSL);
       else
          if(ModifyPositionSl(ticket, newSL, failed))
-            moved++;
+            changed++;
      }
 
    //--- Cekajici prikazy: meni se jen SL, vstup a PT zustavaji
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
       const ulong ticket = OrderGetTicket(i);
-      if(ticket == 0 || !IsOurOrder() || OrderGetDouble(ORDER_SL) <= 0.0)
+      if(ticket == 0 || !IsOurOrder())
+         continue;
+      const double sl = OrderGetDouble(ORDER_SL);
+      if(sl <= 0.0)
          continue;
 
+      const bool   isBuy = IsBuyOrderType(OrderGetInteger(ORDER_TYPE));
       const double price = OrderGetDouble(ORDER_PRICE_OPEN);
-      const double newSL = NormalizePrice(OrderGetDouble(ORDER_SL) + delta);
-      if(!StopLossValid(IsBuyOrderType(OrderGetInteger(ORDER_TYPE)), price, newSL, stops))
+      const double newSL = consolidate ? targets[SlGroupIndex(isBuy)] : NormalizePrice(sl + delta);
+      if(SamePrice(newSL, sl))
+         continue;
+      if(!StopLossValid(isBuy, price, newSL, stops))
          RejectMove(failed, "SL příkazu", ticket, newSL);
       else
          if(ModifyOrderLevels(ticket, price, newSL, OrderGetDouble(ORDER_TP), failed))
            {
             UpdateSentSl(ticket, MathAbs(price - newSL));
-            moved++;
+            changed++;
            }
      }
-   return(moved);
+   return(changed);
   }
 
 //+------------------------------------------------------------------+
-//| Posune vsechny cekajici prikazy experta i s jejich SL a PT.      |
-//|  delta  - posun v cene (kladny = nahoru)                         |
-//|  failed - in/out: pocet neuspechu                                |
+//| Posune cekajici prikazy experta i s jejich SL a PT.              |
+//|  delta       - posun v cene (kladny = nahoru); pri sjednoceni 0  |
+//|  consolidate - true = cena na prumer sveho typu prikazu          |
+//|                (AveragePendingPrices) misto posunu o delta       |
+//|  failed      - in/out: pocet neuspechu                           |
 //| SL a PT jedou s prikazem, takze vzdalenosti, riziko i objem      |
-//| zustavaji (pamet pro dorovnani po vyplneni plati dal). Posun     |
-//| prikaz neprevadi na jiny typ - kdyby se dostal na spatnou stranu |
-//| trhu nebo do stop levelu (PendingPriceValid), nepohne se.        |
+//| zustavaji (pamet pro dorovnani po vyplneni plati dal). Prikaz se |
+//| neprevadi na jiny typ - kdyby se dostal na spatnou stranu trhu   |
+//| nebo do stop levelu (PendingPriceValid), nepohne se.             |
 //| Vraci pocet posunutych prikazu.                                  |
 //+------------------------------------------------------------------+
-int MovePendingOrders(const double delta, int &failed)
+int AdjustPendingOrders(const double delta, const bool consolidate, int &failed)
   {
+   double targets[];
+   if(consolidate)
+      AveragePendingPrices(targets);
+
    const double stops = StopsLevelPrice();
    const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   int moved = 0;
+   int changed = 0;
 
    for(int i = OrdersTotal() - 1; i >= 0; i--)
      {
@@ -2189,41 +2330,80 @@ int MovePendingOrders(const double delta, int &failed)
       if(ticket == 0 || !IsOurOrder())
          continue;
 
-      const long   type     = OrderGetInteger(ORDER_TYPE);
-      const bool   isStop   = (type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_SELL_STOP);
-      const double sl       = OrderGetDouble(ORDER_SL);
-      const double tp       = OrderGetDouble(ORDER_TP);
-      const double newPrice = NormalizePrice(OrderGetDouble(ORDER_PRICE_OPEN) + delta);
-      if(!PendingPriceValid(IsBuyOrderType(type), isStop, newPrice, ask, bid, stops))
+      //--- Sjednoceni pracuje jen s typy, ktere prumeruje (PendingTypeIndex)
+      const long type = OrderGetInteger(ORDER_TYPE);
+      const int  k    = PendingTypeIndex(type);
+      if(consolidate && k < 0)
+         continue;
+      const double price    = OrderGetDouble(ORDER_PRICE_OPEN);
+      const double newPrice = consolidate ? targets[k] : NormalizePrice(price + delta);
+      if(SamePrice(newPrice, price))
+         continue;
+
+      if(!PendingPriceValid(IsBuyOrderType(type), IsStopOrderType(type), newPrice, ask, bid, stops))
         {
          RejectMove(failed, "příkaz", ticket, newPrice);
          continue;
         }
-      // Chybejici SL / PT zustava chybejici (0 se neposouva)
+      // SL a PT se posunou o stejny kus jako vstup; chybejici zustava chybejici
+      const double shift = newPrice - price;
+      const double sl    = OrderGetDouble(ORDER_SL);
+      const double tp    = OrderGetDouble(ORDER_TP);
       if(ModifyOrderLevels(ticket, newPrice,
-                           sl > 0.0 ? NormalizePrice(sl + delta) : 0.0,
-                           tp > 0.0 ? NormalizePrice(tp + delta) : 0.0, failed))
-         moved++;
+                           sl > 0.0 ? NormalizePrice(sl + shift) : 0.0,
+                           tp > 0.0 ? NormalizePrice(tp + shift) : 0.0, failed))
+         changed++;
      }
-   return(moved);
+   return(changed);
   }
 
 //+------------------------------------------------------------------+
-//| Proc tlacitka posunu zesednou ("" = lze posouvat).               |
-//|  st         - stav spocteny pro toto prekresleni                 |
-//|  moveOrders - rezim: true = cele cekajici prikazy, false = SL    |
-//| Posun je uprava existujicich obchodu, ridi se tedy povolenim     |
-//| zavirani (jde i v rezimu "jen zavirani").                        |
+//| Proc tlacitka posunu / sjednoceni zesednou ("" = lze).           |
+//|  st       - stav spocteny pro toto prekresleni                   |
+//|  orders   - true = cekajici prikazy (PO), false = SL             |
+//|  minCount - kolik obchodu je treba (posun 1, sjednoceni 2)       |
+//| Uprava existujicich obchodu se ridi povolenim zavirani (jde i    |
+//| v rezimu "jen zavirani"). Rezim SL pocita pozice i prikazy.      |
 //+------------------------------------------------------------------+
-string MoveBlockReason(const SPanelState &st, const bool moveOrders)
+string AdjustBlockReason(const SPanelState &st, const bool orders, const int minCount)
   {
    if(!st.canClose)
       return("nelze upravovat - " + st.closeReason);
-   if(moveOrders && st.orders == 0)
-      return("žádný čekající příkaz experta");
-   if(!moveOrders && st.orders + st.positions == 0)
-      return("žádná pozice ani příkaz experta");
-   return("");
+   const int count = orders ? st.orders : st.orders + st.positions;
+   if(count >= minCount)
+      return("");
+   if(minCount <= 1)
+      return(orders ? "žádný čekající příkaz experta" : "žádná pozice ani příkaz experta");
+   return(StringFormat("méně než %d %s experta", minCount, orders ? "čekající příkazy" : "obchody"));
+  }
+
+//+------------------------------------------------------------------+
+//| Provede posun nebo sjednoceni a vysledek zapise do panelu i logu.|
+//|  label       - popisek akce pro hlasky ("SL +10", "SJEDNOTIT PO")|
+//|  orders      - true = cekajici prikazy, false = SL               |
+//|  delta       - posun v cene (pri sjednoceni 0)                   |
+//|  consolidate - true = sjednotit na prumer misto posunu           |
+//| Predem se hlida jen povoleni uprav - prazdny trh pozna uprava    |
+//| sama (nic se nezmeni). Bez potvrzovani, jako zavirani.           |
+//+------------------------------------------------------------------+
+void RunAdjust(const string label, const bool orders, const double delta, const bool consolidate)
+  {
+   string reason;
+   if(!ClosingAllowed(reason))
+      g_lastEvent = label + ": nelze upravovat - " + reason;
+   else
+     {
+      int failed = 0;
+      const int changed = orders ? AdjustPendingOrders(delta, consolidate, failed)
+                                 : AdjustStopLosses(delta, consolidate, failed);
+      g_lastEvent = (changed + failed == 0)
+                    ? label + ": nic ke změně"
+                    : StringFormat("%s: upraveno %d%s", label, changed, FailedSuffix(failed));
+     }
+   Print("PQE: ", g_lastEvent);
+
+   UpdatePanel();
+   ChartRedraw();
   }
 
 //+------------------------------------------------------------------+
@@ -2243,31 +2423,32 @@ void OnMoveModeButton(const bool orders)
 //|  up   - true = 1. rada (nahoru), false = 2. rada (dolu)          |
 //|  step - krok posunu (0 = maly, 1 = stredni, 2 = velky)           |
 //| Podle rezimu posune SL vsech pozic a prikazu experta, nebo cele  |
-//| cekajici prikazy. Bez potvrzovani, jako zavirani. Predem se      |
-//| hlida jen povoleni uprav - prazdny trh pozna posun sam (nic).    |
+//| cekajici prikazy.                                                |
 //+------------------------------------------------------------------+
 void OnMoveButton(const bool up, const int step)
   {
    if(step < 0 || step >= PQE_MOVE_STEPS)
       return;
-   const double delta = (up ? 1.0 : -1.0) * MoveStepPoints(step) * _Point;
-   const string label = (g_moveOrders ? "PO " : "SL ") + MoveButtonText(up, step);
+   RunAdjust((g_moveOrders ? "PO " : "SL ") + MoveButtonText(up, step), g_moveOrders,
+             (up ? 1.0 : -1.0) * MoveStepPoints(step) * _Point, false);
+  }
 
-   string reason;
-   if(!ClosingAllowed(reason))
-      g_lastEvent = label + ": nelze upravovat - " + reason;
-   else
-     {
-      int failed = 0;
-      const int moved = g_moveOrders ? MovePendingOrders(delta, failed) : MoveStopLosses(delta, failed);
-      g_lastEvent = (moved + failed == 0)
-                    ? label + ": nic k posunu"
-                    : StringFormat("%s: posunuto %d%s", label, moved, FailedSuffix(failed));
-     }
-   Print("PQE: ", g_lastEvent);
+//--- Popisek tlacitka sjednoceni (i pro hlasky v panelu a logu)
+string ConsolidateButtonText(const bool orders)
+  {
+   return(orders ? "SJEDNOTIT PO" : "SJEDNOTIT SL");
+  }
 
-   UpdatePanel();
-   ChartRedraw();
+//+------------------------------------------------------------------+
+//| Stisk tlacitka SJEDNOTIT SL / SJEDNOTIT PO.                      |
+//|  orders - true = ceny cekajicich prikazu, false = SL             |
+//| SL se srovnaji na prumer zvlast pro BUY a SELL, cekajici prikazy |
+//| (i s SL a PT) na prumer zvlast pro kazdy typ prikazu. Co uz na   |
+//| prumeru je, se nemeni.                                           |
+//+------------------------------------------------------------------+
+void OnConsolidateButton(const bool orders)
+  {
+   RunAdjust(ConsolidateButtonText(orders), orders, 0.0, true);
   }
 
 //+------------------------------------------------------------------+
@@ -2721,7 +2902,8 @@ int Dpi(const double base)
 //| Poradi shora: titulek, tri pole formulare, predvolby rizika,     |
 //| pocet pozic (1 / 2 / 3), pet                                     |
 //| rad tlacitek (BUYSTOP / SELLSTOP, BUY / SELL, BUY / SELL MARKET, |
-//| zavirani, castecne zavreni), dve rady posunu SL / prikazu        |
+//| zavirani, castecne zavreni), dve rady posunu SL / prikazu,       |
+//| rada sjednoceni SL / prikazu                                     |
 //| a stavove radky. Vyska vznika                                    |
 //| soucasne s polohami, takze pozadi panelu i IsInsidePanel vzdy    |
 //| odpovidaji tomu, co je vykreslene -                              |
@@ -2768,6 +2950,8 @@ void BuildLayout(SPanelLayout &lo)
    lo.yMoveUp = y;
    y += Px(PQE_RISK_BTN_H) + lo.gap;
    lo.yMoveDown = y;
+   y += Px(PQE_RISK_BTN_H) + lo.gap;
+   lo.yConsolidate = y;
    y += Px(PQE_RISK_BTN_H) + lo.gap;
    lo.yStatus = y;
    y += PQE_STATUS_LINES * lo.statusH;
@@ -2895,6 +3079,9 @@ void UpdatePanel()
    //--- Dve rady posunu SL / cekajicich prikazu (nahoru, dolu)
    DrawMoveRow(true,  x, lo.yMoveUp,   inner, st);
    DrawMoveRow(false, x, lo.yMoveDown, inner, st);
+
+   //--- Sjednoceni SL / cen cekajicich prikazu na prumer
+   DrawConsolidateButtons(x, lo.yConsolidate, inner, st);
 
    //--- Stavove radky
    string lines[PQE_STATUS_LINES];
@@ -3223,7 +3410,7 @@ void DrawMoveRow(const bool up, const int x, const int y, const int w, const SPa
    const int    gap     = Px(PQE_RISK_BTN_GAP);
    const int    btnH    = Px(PQE_RISK_BTN_H);
    const int    cells   = PQE_MOVE_STEPS + 1;   // prepinac + kroky
-   const string blocked = MoveBlockReason(st, g_moveOrders);
+   const string blocked = AdjustBlockReason(st, g_moveOrders, 1);
    const string target  = g_moveOrders ? "všechny čekající příkazy experta i s SL a PT"
                                        : "SL všech pozic a čekajících příkazů experta";
    int bx, bw;
@@ -3252,6 +3439,34 @@ void DrawMoveRow(const bool up, const int x, const int y, const int w, const SPa
                  (blocked != "") ? PQE_COLOR_BTN_OFF
                  : (up ? PQE_COLOR_BTN_MOVE_UP : PQE_COLOR_BTN_MOVE_DOWN),
                  tooltip, 0);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli radu SJEDNOTIT SL / SJEDNOTIT PO.                       |
+//| Tlacitko zesedne, kdyz neni co sjednocovat (mene nez 2 obchody)  |
+//| nebo upravy nejdou; duvod je v bubline.                          |
+//|  x, y - poloha rady, w - celkova sirka rady v pixelech           |
+//|  st   - stav spocteny pro toto prekresleni                       |
+//+------------------------------------------------------------------+
+void DrawConsolidateButtons(const int x, const int y, const int w, const SPanelState &st)
+  {
+   const int gap  = Px(PQE_RISK_BTN_GAP);
+   const int btnH = Px(PQE_RISK_BTN_H);
+
+   for(int i = 0; i < 2; i++)
+     {
+      const bool   orders  = (i == 1);
+      const string blocked = AdjustBlockReason(st, orders, 2);
+      int bx, bw;
+      RowCell(x, w, 2, gap, i, bx, bw);
+
+      const string tooltip = (blocked != "") ? "Nelze: " + blocked
+                             : orders ? "Srovná čekající příkazy experta (i s SL a PT) na průměrnou cenu, zvlášť každý typ příkazu."
+                             : "Srovná SL pozic a čekajících příkazů experta na průměrnou úroveň, zvlášť BUY a SELL.";
+      DrawButton(orders ? PQE_OBJ_BTN_CONS_PO : PQE_OBJ_BTN_CONS_SL, bx, y, bw, btnH,
+                 ConsolidateButtonText(orders),
+                 (blocked != "") ? PQE_COLOR_BTN_OFF : PQE_COLOR_BTN_CONSOLIDATE, tooltip, 0);
      }
   }
 
