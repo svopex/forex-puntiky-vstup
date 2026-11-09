@@ -1,3 +1,5 @@
+![Panel Puntiky Quick Entry v grafu MT5](example.png)
+
 # Puntiky Quick Entry — rychlý vstup do pozice pro MetaTrader 5
 
 Expert Advisor pro MT5 (RoboForex, XAUUSD), který zadá obchod na **dvě
@@ -93,7 +95,7 @@ každý vstup (`BUY` / `SELL`, `BUYSTOP` / `SELLSTOP` i `BUY MARKET` /
   zásahu SL tak odpovídá zadanému procentu. Např. riziko 2 % a `50/40/10` =
   pozice s rizikem 1 %, 0,8 % a 0,2 %. Objem každé pozice se zaokrouhlí dolů
   na krok objemu zvlášť; když na některou nestačí minimální lot (typicky ta
-  s 10 %), vstup se nezadá a panel řekne, která pozice to je. Marže se ověřuje
+  s 10 %), tlačítka vstupu zešednou a panel řekne, která pozice to je. Marže se ověřuje
   za všechny pozice dohromady.
 - Každá pozice je samostatný příkaz (komentář `PQE BUYSTOP 2/3` apod.); když
   server některý odmítne, další se už neposílají a panel ukáže, kolik jich
@@ -281,8 +283,10 @@ příkazy 0  pozice 0  zůstatek 10000.00
 ```
 
 Řádek `stav:` říká, proč se případně nedá obchodovat (vypnutý Algo Trading,
-účet bez povolení…) — ve stejné situaci tlačítka zešednou a důvod mají
-v bublině.
+účet bez povolení, na riziko nestačí minimální lot…) — ve stejné situaci
+zešednou všechna tlačítka vstupu (`BUYSTOP` / `SELLSTOP`, `BUY` / `SELL`
+i `BUY MARKET` / `SELL MARKET`) a důvod mají v bublině; jejich stisk pak
+jen zapíše důvod do panelu.
 
 ## Nasazení
 
@@ -348,12 +352,13 @@ panelu. Před každým nasazením nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.90**
+**Aktuální verze: 1.91**
 
 ## Struktura repozitáře
 
 ```
 MQL5/Experts/Puntiky/PuntikyQuickEntry.mq5   zdroj experta (jediný soubor)
+example.png                                   ukázka panelu v grafu (README)
 scripts/deploy.ps1                            nasazení + kompilace
 scripts/deploy.cmd                            obálka pro stroje se zakázaným PowerShellem
 ```

@@ -33,7 +33,7 @@
 //|  prumernou uroven.                                               |
 //+------------------------------------------------------------------+
 // Verze experta - zvysuje se pred kazdym nasazenim (viz README, Verzovani)
-#define EA_VERSION "1.90"
+#define EA_VERSION "1.91"
 
 #property copyright "Puntiky"
 #property version   EA_VERSION
@@ -2566,11 +2566,15 @@ ENUM_PQE_ENTRY ArmEntry(const ENUM_PQE_ARM arm)
 //| Lze z formulare otevrit novy obchod?                             |
 //|  err - out: duvod, proc ne                                       |
 //| Pole se nejdriv znovu nactou - uzivatel mohl napsat hodnotu      |
-//| a rovnou stisknout tlacitko bez potvrzeni Enterem.               |
+//| a rovnou stisknout tlacitko bez potvrzeni Enterem. Kontroly jsou |
+//| stejne jako u zesednuti tlacitek (OpenBlockReason), vcetne       |
+//| objemu z rizika - sede tlacitko tak ani nezahaji vyber vstupu.   |
 //+------------------------------------------------------------------+
 bool EntryAllowed(string &err)
   {
-   return(ReloadForm(err) && (err = FormError()) == "" && TradingAllowed(err));
+   double lots[PQE_MAX_POSITIONS];
+   return(ReloadForm(err) && (err = FormError()) == "" && TradingAllowed(err) &&
+          CalcSplitLots(g_slPoints * _Point, g_splitIndex, lots, err));
   }
 
 //--- Stav vyberu pro dany smer a variantu tlacitka
@@ -3278,7 +3282,8 @@ void DrawFormRow(const string name, const string label, const int x, const int y
 //+------------------------------------------------------------------+
 //| Vykresli tlacitko BUY / SELL / BUYSTOP / SELLSTOP a nastavi      |
 //| mu podobu podle stavu. Behem vyberu se tlacitko zmeni na ZRUSIT, |
-//| pri chybe formulare nebo zakazanem obchodovani zesedne a duvod   |
+//| pri chybe formulare, zakazanem obchodovani nebo objemu, ktery    |
+//| nejde spocitat (OpenBlockReason), zesedne a duvod                |
 //| da do bubliny. Tlacitka BUYSTOP / SELLSTOP maji mensi pismo,     |
 //| aby se vesel i text "ZRUSIT SELLSTOP".                           |
 //|  name - jmeno objektu, isBuy - smer                              |
@@ -3291,7 +3296,8 @@ void DrawDirectionButton(const string name, const bool isBuy, const bool stopOnl
                          const SPanelState &st)
   {
    const ENUM_PQE_ARM armDir = ArmOf(isBuy, stopOnly);
-   const string dir   = ArmName(armDir);
+   const string dir     = ArmName(armDir);
+   const string blocked = OpenBlockReason(st);
 
    string text    = dir;
    string tooltip = "";
@@ -3305,10 +3311,10 @@ void DrawDirectionButton(const string name, const bool isBuy, const bool stopOnl
       tooltip = "Zruší výběr místa vstupu.";
      }
    else
-      if(OpenBlockReason(st) != "")
+      if(blocked != "")
         {
          bg      = PQE_COLOR_BTN_OFF;
-         tooltip = "Nelze obchodovat: " + OpenBlockReason(st);
+         tooltip = "Nelze obchodovat: " + blocked;
         }
       else
          if(stopOnly)
@@ -3385,7 +3391,10 @@ void DrawCloseButtons(const int x, const int y, const int w, const int btnH,
 //+------------------------------------------------------------------+
 //| Proc nejde otevrit novy obchod ("" = lze).                       |
 //|  st - stav spocteny pro toto prekresleni                         |
-//| Spolecne poradi kontrol pro stavovy radek a tlacitka vstupu.     |
+//| Spolecne poradi kontrol pro stavovy radek a vsechna tlacitka     |
+//| vstupu (BUY / SELL, BUYSTOP / SELLSTOP i MARKET). Patri sem i    |
+//| objem z rizika (duvod z CalcSplitLots) - kdyz nejde spocitat,    |
+//| vstup by se stejne nezadal, tak at tlacitka zesednou predem.     |
 //+------------------------------------------------------------------+
 string OpenBlockReason(const SPanelState &st)
   {
@@ -3393,6 +3402,8 @@ string OpenBlockReason(const SPanelState &st)
       return(st.formError);
    if(!st.canTrade)
       return(st.tradeReason);
+   if(!st.lotsOk)
+      return(st.lotReason);
    return("");
   }
 
@@ -3427,11 +3438,7 @@ void DrawMarketButton(const string name, const bool isBuy,
   {
    const string dir = isBuy ? "BUY" : "SELL";
 
-   //--- Oproti vstupu s klikem se hned hlida i objem - obchod jde ven
-   //--- okamzite a bez nahledu
-   string blocked = OpenBlockReason(st);
-   if(blocked == "" && !st.lotsOk)
-      blocked = st.lotReason;
+   const string blocked = OpenBlockReason(st);
 
    string tooltip;
    if(blocked != "")
