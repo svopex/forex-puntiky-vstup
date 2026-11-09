@@ -23,13 +23,17 @@
 //|  Tlacitka 1 / 2 / 3 pod rizikem urci, kolik pozic vstup otevre:  |
 //|  pozice k ma PT = k x PT, SL je vsem spolecny a riziko se mezi   |
 //|  pozice deli rovnym dilem.                                       |
+//|  Dve rady pod castecnym zavrenim posouvaji o maly / stredni /    |
+//|  velky krok nahoru (1. rada) nebo dolu (2. rada) bud SL vsech    |
+//|  pozic a prikazu experta, nebo cele cekajici prikazy; rezim SL / |
+//|  PO se prepina prvnimi tlacitky rad.                             |
 //+------------------------------------------------------------------+
 // Verze experta - zvysuje se pred kazdym nasazenim (viz README, Verzovani)
-#define EA_VERSION "1.60"
+#define EA_VERSION "1.70"
 
 #property copyright "Puntiky"
 #property version   EA_VERSION
-#property description "Rychlý vstup: BUY/SELL (STOP, LIMIT nebo MARKET) či BUYSTOP/SELLSTOP + klik do grafu, nebo BUY/SELL MARKET hned; 1-3 pozice s PT, 2xPT, 3xPT; částečné zavření pozice"
+#property description "Rychlý vstup: BUY/SELL (STOP, LIMIT nebo MARKET) či BUYSTOP/SELLSTOP + klik do grafu, nebo BUY/SELL MARKET hned; 1-3 pozice s PT, 2xPT, 3xPT; částečné zavření pozice; posun SL a čekajících příkazů"
 
 // Vychozi predvolby tlacitek - pouzije je vstup i nahradni rada, kdyz
 // vstup neobsahuje zadnou platnou hodnotu
@@ -49,6 +53,12 @@ input int    InpSlippage           = 20;                // Maximální skluz MAR
 input int    InpExpirationMinutes  = 0;                 // Platnost čekajícího příkazu STOP/LIMIT (minuty, 0 = do zrušení)
 input bool   InpAlignStopsToFill   = true;              // Po vyplnění dorovnat SL/PT na skutečnou plnicí cenu
 input long   InpMagic              = 202608281524;      // Magic number
+
+//--- Posun SL a cekajicich prikazu tlacitky v panelu
+input group "=== Posun SL / příkazů ==="
+input int    InpMoveMinPoints      = 10;                // Posun - malý krok na doladění (body)
+input int    InpMoveMidPoints      = 50;                // Posun - střední krok (body)
+input int    InpMoveMaxPoints      = 200;               // Posun - velký krok (body)
 
 //--- Panel a nahled v grafu
 input group "=== Panel a graf ==="
@@ -91,6 +101,7 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_MAX_RISK_PRESETS 8           // nejvyse tolik predvoleb rizika
 #define PQE_MAX_CLOSE_PRESETS 4          // nejvyse tolik tlacitek castecneho zavreni (popisky jsou delsi)
 #define PQE_MAX_POSITIONS    3           // nejvyse tolik pozic na jeden vstup (tlacitka 1 / 2 / 3)
+#define PQE_MOVE_STEPS       3           // kroky posunu v rade (maly, stredni, velky)
 #define PQE_RISK_EPS         0.005       // tolerance shody rizika s predvolbou (%)
 #define PQE_MAX_POINTS       1000000     // horni mez SL / PT v bodech (chrani prevod na int)
 #define PQE_MAX_RISK_PCT     100.0       // horni mez rizika na obchod (% zustatku)
@@ -122,6 +133,8 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_COLOR_BTN_MKT_BUY   C'0,140,90'  // tlacitko BUY MARKET (do tyrkysova, aby se nepletlo s BUY)
 #define PQE_COLOR_BTN_MKT_SELL  C'175,0,70'  // tlacitko SELL MARKET (do purpurova, aby se nepletlo se SELL)
 #define PQE_COLOR_BTN_PARTIAL   C'130,70,0'  // tlacitka castecneho zavreni (je otevrena prave jedna pozice)
+#define PQE_COLOR_BTN_MOVE_UP   C'30,90,60'  // posun nahoru
+#define PQE_COLOR_BTN_MOVE_DOWN C'110,45,45' // posun dolu
 #define PQE_COLOR_BTN_CANCEL C'120,80,0'    // tlacitko ZRUSIT (probiha vyber mista vstupu)
 #define PQE_COLOR_BTN_CANCEL_ORD C'120,80,0' // tlacitko ZRUSIT PRIKAZY (lezi cekajici prikaz)
 #define PQE_COLOR_BTN_CLOSE_ONE  C'150,50,0' // tlacitko ZAVRIT 1 (je otevrena pozice)
@@ -149,6 +162,10 @@ input color  InpColorTP            = clrDeepSkyBlue; // Barva linky PT
 #define PQE_OBJ_BTN_RISK          (PQE_PREFIX + "BTN_RISK_")     // + poradi predvolby
 #define PQE_OBJ_BTN_PARTIAL       (PQE_PREFIX + "BTN_PART_")     // + poradi predvolby zavreni
 #define PQE_OBJ_BTN_COUNT         (PQE_PREFIX + "BTN_CNT_")      // + poradi tlacitka poctu pozic (0 = 1 pozice)
+#define PQE_OBJ_BTN_MOVE_SL       (PQE_PREFIX + "BTN_MVMODE_SL") // rezim posunu: SL
+#define PQE_OBJ_BTN_MOVE_PO       (PQE_PREFIX + "BTN_MVMODE_PO") // rezim posunu: cekajici prikazy
+#define PQE_OBJ_BTN_MOVE_UP       (PQE_PREFIX + "BTN_MVUP_")     // + krok posunu nahoru (0 = maly)
+#define PQE_OBJ_BTN_MOVE_DOWN     (PQE_PREFIX + "BTN_MVDN_")     // + krok posunu dolu (0 = maly)
 #define PQE_OBJ_BTN_MEASURE       (PQE_PREFIX + "BTN_MEASURE")   // "nastav" - mereni SL/PT v grafu
 #define PQE_OBJ_STATUS       (PQE_PREFIX + "STATUS_")    // + poradi radku
 #define PQE_OBJ_PV_ENTRY     (PQE_PREFIX + "PV_ENTRY")
@@ -280,6 +297,8 @@ struct SPanelLayout
    int               yMarket;      // tlacitka BUY MARKET / SELL MARKET
    int               yClose;       // rada tlacitek zavirani
    int               yPartial;     // rada tlacitek castecneho zavreni
+   int               yMoveUp;      // rada posunu SL / prikazu nahoru
+   int               yMoveDown;    // rada posunu SL / prikazu dolu
    int               yStatus;      // prvni stavovy radek
   };
 
@@ -294,6 +313,7 @@ int           g_slPoints    = 0;              // hodnoty formulare (posledni pla
 int           g_tpPoints    = 0;
 double        g_riskPercent = 0.0;
 int           g_positionCount = 1;            // kolik pozic vstup otevre (tlacitka 1 / 2 / 3)
+bool          g_moveOrders  = false;          // co tlacitka posunu hybou: false = SL, true = cele cekajici prikazy
 SSentOrder   g_sent[PQE_MAX_SENT];           // kruhova pamet odeslanych prikazu
 int           g_sentNext    = 0;              // dalsi volny slot v pameti
 int           g_mouseX      = -1;             // posledni poloha mysi (obnova nahledu po ticku)
@@ -330,11 +350,12 @@ int OnInit()
    if(InpStopLossPoints <= 0 || InpStopLossPoints > PQE_MAX_POINTS ||
       InpTakeProfitPoints < 0 || InpTakeProfitPoints > PQE_MAX_POINTS ||
       InpRiskPercent <= 0.0 || InpRiskPercent > PQE_MAX_RISK_PCT ||
-      InpSlippage < 0 || InpExpirationMinutes < 0 || InpPanelFontSize < 6)
+      InpSlippage < 0 || InpExpirationMinutes < 0 || InpPanelFontSize < 6 ||
+      !MoveStepsValid())
      {
       PrintFormat("PQE: neplatné vstupy - SL 1..%d b, PT 0..%d b, riziko 0..%.0f %%, "
-                  "skluz >= 0, platnost >= 0, písmo >= 6.",
-                  PQE_MAX_POINTS, PQE_MAX_POINTS, PQE_MAX_RISK_PCT);
+                  "skluz >= 0, platnost >= 0, písmo >= 6, kroky posunu 1..%d b.",
+                  PQE_MAX_POINTS, PQE_MAX_POINTS, PQE_MAX_RISK_PCT, PQE_MAX_POINTS);
       return(INIT_PARAMETERS_INCORRECT);
      }
 
@@ -542,6 +563,13 @@ void OnPanelButton(const string name)
       return;
      }
 
+   //--- Prepinac rezimu posunu: SL nebo cele cekajici prikazy (PO)
+   if(name == PQE_OBJ_BTN_MOVE_SL || name == PQE_OBJ_BTN_MOVE_PO)
+     {
+      OnMoveModeButton(name == PQE_OBJ_BTN_MOVE_PO);
+      return;
+     }
+
    //--- Rada zavirani
    if(name == PQE_OBJ_BTN_CANCEL_ORDERS)  { OnCloseButton(PQE_CLOSE_ORDERS); return; }
    if(name == PQE_OBJ_BTN_CLOSE_ONE)      { OnCloseButton(PQE_CLOSE_ONE);    return; }
@@ -558,6 +586,18 @@ void OnPanelButton(const string name)
    if(index >= 0)
      {
       OnCountButton(index);
+      return;
+     }
+   index = PresetIndex(name, PQE_OBJ_BTN_MOVE_UP);
+   if(index >= 0)
+     {
+      OnMoveButton(true, index);
+      return;
+     }
+   index = PresetIndex(name, PQE_OBJ_BTN_MOVE_DOWN);
+   if(index >= 0)
+     {
+      OnMoveButton(false, index);
       return;
      }
    index = PresetIndex(name, PQE_OBJ_BTN_PARTIAL);
@@ -1102,6 +1142,34 @@ double StopsLevelPrice()
    return((double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * _Point);
   }
 
+//+------------------------------------------------------------------+
+//| Lze cekajici prikaz zadat na dane cene?                          |
+//|  isBuy, isStop - smer a typ (STOP / LIMIT)                       |
+//|  price         - cena prikazu                                    |
+//|  ask, bid, stops - stav trhu a stop level brokera (cena)         |
+//| STOP lezi za trhem, LIMIT pred nim, vzdy dal nez stop level.     |
+//| Sdili ho zadani vstupu (BuildPlan) i posun prikazu.              |
+//+------------------------------------------------------------------+
+bool PendingPriceValid(const bool isBuy, const bool isStop, const double price,
+                       const double ask, const double bid, const double stops)
+  {
+   if(isBuy)
+      return(isStop ? price > ask + stops : price < ask - stops);
+   return(isStop ? price < bid - stops : price > bid + stops);
+  }
+
+//+------------------------------------------------------------------+
+//| Lezi SL na ztratove strane reference aspon o stop level?         |
+//|  isBuy     - smer obchodu                                        |
+//|  reference - vstup prikazu, u pozice cena zavreni (Bid / Ask)    |
+//|  sl, stops - stop loss a stop level brokera (cena)               |
+//| Sdili ho zadani vstupu (BuildPlan) i posun SL.                   |
+//+------------------------------------------------------------------+
+bool StopLossValid(const bool isBuy, const double reference, const double sl, const double stops)
+  {
+   return(isBuy ? sl <= reference - stops : sl >= reference + stops);
+  }
+
 //--- Shoda dvou cen na uroven jednoho bodu (double se presne neporovnava)
 bool SamePrice(const double a, const double b)
   {
@@ -1277,41 +1345,23 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
    //--- LIMIT prednost pred MARKET vsude, kde ho broker prijme (dal od
    //--- trhu nez stop level); MARKET tak zbyva jen tesne u trhu.
    //--- BUYSTOP / SELLSTOP LIMIT nezadava a vstupuje tam za trh.
-   const bool stopOnly = (kind == PQE_ENTRY_NO_LIMIT);
+   //--- Za trh (MARKET) jen na "druhe" strane trhu nebo presne na nem:
+   //--- BUY na Ask a pod nim, SELL na Bid a nad nim.
+   const bool stopOnly  = (kind == PQE_ENTRY_NO_LIMIT);
+   const bool marketOk  = isBuy ? price <= ask : price >= bid;
    if(kind == PQE_ENTRY_MARKET)
-     {
-      plan.mode  = PQE_MODE_MARKET;
+      plan.mode = PQE_MODE_MARKET;
+   else
+      if(PendingPriceValid(isBuy, true, price, ask, bid, stops))
+         plan.mode = PQE_MODE_STOP;
+      else
+         if(!stopOnly && PendingPriceValid(isBuy, false, price, ask, bid, stops))
+            plan.mode = PQE_MODE_LIMIT;
+         else
+            if(marketOk)
+               plan.mode = PQE_MODE_MARKET;
+   if(plan.mode == PQE_MODE_MARKET)
       plan.entry = isBuy ? ask : bid;
-     }
-   else
-   if(isBuy)
-     {
-      if(price > ask + stops)
-         plan.mode = PQE_MODE_STOP;
-      else
-         if(!stopOnly && price < ask - stops)
-            plan.mode = PQE_MODE_LIMIT;
-         else
-            if(price <= ask)
-              {
-               plan.mode  = PQE_MODE_MARKET;
-               plan.entry = ask;
-              }
-     }
-   else
-     {
-      if(price < bid - stops)
-         plan.mode = PQE_MODE_STOP;
-      else
-         if(!stopOnly && price > bid + stops)
-            plan.mode = PQE_MODE_LIMIT;
-         else
-            if(price >= bid)
-              {
-               plan.mode  = PQE_MODE_MARKET;
-               plan.entry = bid;
-              }
-     }
 
    //--- U MARKET se vstup prepsal na Ask/Bid - i ten se zarovna, aby
    //--- vzdalenosti nize vychazely ze stejne mrizky jako SL a PT
@@ -1326,7 +1376,6 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
    //--- kotace vetsi nez bod (napr. indexove CFD s krokem 0.25 a bodem
    //--- 0.01), lisi se od nominalnich hodnot z formulare - a rozhoduje
    //--- ta skutecna, protoze ta se posila na server.
-   const double slReal = MathAbs(plan.entry - plan.sl);
    const double tpReal = (plan.tp > 0.0) ? MathAbs(plan.tp - plan.entry) : 0.0;
 
    if(plan.mode == PQE_MODE_TOO_CLOSE)
@@ -1337,7 +1386,7 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
 
    //--- SL a PT musi respektovat stop level brokera. Kontroluje se PT
    //--- 1. pozice - PT dalsich pozic je od vstupu jeste dal.
-   if(slReal < stops)
+   if(!StopLossValid(isBuy, plan.entry, plan.sl, stops))
      {
       plan.reason = StringFormat("SL < stop-level brokera (%.0f b)", stops / _Point);
       return;
@@ -1359,7 +1408,7 @@ void BuildPlan(const bool isBuy, const ENUM_PQE_ENTRY kind, double price, SEntry
    //--- jinak by realna ztrata na SL neodpovidala zadanemu procentu.
    //--- Riziko se deli mezi vsechny pozice vstupu.
    string lotReason;
-   plan.lots = CalcLot(slReal, g_riskPercent / plan.count, lotReason);
+   plan.lots = CalcLot(MathAbs(plan.entry - plan.sl), g_riskPercent / plan.count, lotReason);
    if(plan.lots <= 0.0)
      {
       plan.reason = lotReason;
@@ -1411,6 +1460,31 @@ void RememberSent(const ulong ticket, const double slDist, const double tpDist)
    g_sentNext = (g_sentNext + 1) % PQE_MAX_SENT;
   }
 
+//--- Slot pameti odeslanych prikazu s danym ticketem (-1 = neni v pameti)
+int SentSlot(const ulong ticket)
+  {
+   if(ticket == 0)
+      return(-1);
+   for(int i = 0; i < PQE_MAX_SENT; i++)
+      if(g_sent[i].ticket == ticket)
+         return(i);
+   return(-1);
+  }
+
+//+------------------------------------------------------------------+
+//| Prepise vzdalenost SL drive odeslaneho prikazu po posunu SL.     |
+//|  ticket - ticket prikazu, slDist - nova vzdalenost SL (cena)     |
+//| Jinak by dorovnani po vyplneni vratilo SL na puvodni vzdalenost. |
+//| Prikaz mimo pamet (napr. po restartu) se dorovnava podle         |
+//| historie prikazu, kde uz je posunuty SL.                         |
+//+------------------------------------------------------------------+
+void UpdateSentSl(const ulong ticket, const double slDist)
+  {
+   const int i = SentSlot(ticket);
+   if(i >= 0)
+      g_sent[i].slDist = slDist;
+  }
+
 //+------------------------------------------------------------------+
 //| Najde vzdalenosti SL/PT drive odeslaneho prikazu.                |
 //|  ticket - ticket prikazu, slDist / tpDist - out: vzdalenosti     |
@@ -1418,15 +1492,12 @@ void RememberSent(const ulong ticket, const double slDist, const double tpDist)
 //+------------------------------------------------------------------+
 bool FindSent(const ulong ticket, double &slDist, double &tpDist)
   {
-   for(int i = 0; i < PQE_MAX_SENT; i++)
-     {
-      if(g_sent[i].ticket != ticket || ticket == 0)
-         continue;
-      slDist = g_sent[i].slDist;
-      tpDist = g_sent[i].tpDist;
-      return(true);
-     }
-   return(false);
+   const int i = SentSlot(ticket);
+   if(i < 0)
+      return(false);
+   slDist = g_sent[i].slDist;
+   tpDist = g_sent[i].tpDist;
+   return(true);
   }
 
 //+------------------------------------------------------------------+
@@ -1957,6 +2028,249 @@ void OnPartialButton(const int index)
   }
 
 //+------------------------------------------------------------------+
+//| Posun SL a cekajicich prikazu                                    |
+//+------------------------------------------------------------------+
+
+//--- Velikost kroku posunu v bodech (0 = maly, 1 = stredni, 2 = velky)
+int MoveStepPoints(const int step)
+  {
+   if(step == 0)
+      return(InpMoveMinPoints);
+   if(step == 1)
+      return(InpMoveMidPoints);
+   return(InpMoveMaxPoints);
+  }
+
+//--- Jsou vsechny kroky posunu ze vstupu v rozsahu 1..PQE_MAX_POINTS?
+bool MoveStepsValid()
+  {
+   for(int step = 0; step < PQE_MOVE_STEPS; step++)
+      if(MoveStepPoints(step) <= 0 || MoveStepPoints(step) > PQE_MAX_POINTS)
+         return(false);
+   return(true);
+  }
+
+//--- Popisek tlacitka posunu: "+10" (rada nahoru), "-10" (rada dolu)
+string MoveButtonText(const bool up, const int step)
+  {
+   return((up ? "+" : "-") + IntegerToString(MoveStepPoints(step)));
+  }
+
+//--- Je typ cekajiciho prikazu nakupni? (BUY STOP / BUY LIMIT)
+bool IsBuyOrderType(const long type)
+  {
+   return(type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_BUY_LIMIT);
+  }
+
+//+------------------------------------------------------------------+
+//| Zapise do logu odmitnuty posun a zapocita neuspech.              |
+//|  failed - in/out: pocet neuspechu                                |
+//|  what   - co se posouvalo ("SL pozice", "příkaz" ...)            |
+//|  ticket - ticket, price - cena, na kterou posun nesel            |
+//+------------------------------------------------------------------+
+void RejectMove(int &failed, const string what, const ulong ticket, const double price)
+  {
+   failed++;
+   PrintFormat("PQE: %s #%I64u nelze posunout na %s - špatná strana trhu nebo stop-level",
+               what, ticket, DoubleToString(price, _Digits));
+  }
+
+//+------------------------------------------------------------------+
+//| Zmeni SL vybrane pozice (PositionGetTicket), PT ponecha.         |
+//|  ticket - ticket pozice, sl - novy SL                            |
+//|  failed - in/out: pocet neuspechu                                |
+//| Vraci true pri prijeti pozadavku serverem, neuspech jde do logu. |
+//+------------------------------------------------------------------+
+bool ModifyPositionSl(const ulong ticket, const double sl, int &failed)
+  {
+   if(RequestAccepted(g_trade.PositionModify(ticket, sl, PositionGetDouble(POSITION_TP))))
+      return(true);
+
+   failed++;
+   PrintFormat("PQE: SL pozice #%I64u se nepodařilo posunout, retcode %d (%s)",
+               ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Zmeni ceny vybraneho cekajiciho prikazu (OrderGetTicket).        |
+//|  ticket - ticket prikazu, price / sl / tp - nove urovne          |
+//|  failed - in/out: pocet neuspechu                                |
+//| Platnost prikazu (typ a cas vyprseni) se zachova.                |
+//| Vraci true pri prijeti pozadavku serverem, neuspech jde do logu. |
+//+------------------------------------------------------------------+
+bool ModifyOrderLevels(const ulong ticket, const double price, const double sl, const double tp,
+                       int &failed)
+  {
+   const ENUM_ORDER_TYPE_TIME typeTime = (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+   const datetime expiration = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+   if(RequestAccepted(g_trade.OrderModify(ticket, price, sl, tp, typeTime, expiration)))
+      return(true);
+
+   failed++;
+   PrintFormat("PQE: příkaz #%I64u se nepodařilo upravit, retcode %d (%s)",
+               ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+   return(false);
+  }
+
+//+------------------------------------------------------------------+
+//| Posune SL vsech pozic a cekajicich prikazu experta.              |
+//|  delta  - posun v cene (kladny = nahoru)                         |
+//|  failed - in/out: pocet neuspechu                                |
+//| Pozice a prikazy bez SL se preskoci. SL musi zustat na ztratove  |
+//| strane dal nez stop level (StopLossValid) - u pozice od ceny     |
+//| zavreni (BUY Bid, SELL Ask), u prikazu od jeho vstupu. Objem se  |
+//| nemeni, riziko obchodu se tedy posunem meni. Vraci pocet posunu. |
+//+------------------------------------------------------------------+
+int MoveStopLosses(const double delta, int &failed)
+  {
+   const double stops = StopsLevelPrice();
+   const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   int moved = 0;
+
+   //--- Otevrene pozice
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !IsOurPosition() || PositionGetDouble(POSITION_SL) <= 0.0)
+         continue;
+
+      const bool   isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      const double newSL = NormalizePrice(PositionGetDouble(POSITION_SL) + delta);
+      if(!StopLossValid(isBuy, isBuy ? bid : ask, newSL, stops))
+         RejectMove(failed, "SL pozice", ticket, newSL);
+      else
+         if(ModifyPositionSl(ticket, newSL, failed))
+            moved++;
+     }
+
+   //--- Cekajici prikazy: meni se jen SL, vstup a PT zustavaji
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = OrderGetTicket(i);
+      if(ticket == 0 || !IsOurOrder() || OrderGetDouble(ORDER_SL) <= 0.0)
+         continue;
+
+      const double price = OrderGetDouble(ORDER_PRICE_OPEN);
+      const double newSL = NormalizePrice(OrderGetDouble(ORDER_SL) + delta);
+      if(!StopLossValid(IsBuyOrderType(OrderGetInteger(ORDER_TYPE)), price, newSL, stops))
+         RejectMove(failed, "SL příkazu", ticket, newSL);
+      else
+         if(ModifyOrderLevels(ticket, price, newSL, OrderGetDouble(ORDER_TP), failed))
+           {
+            UpdateSentSl(ticket, MathAbs(price - newSL));
+            moved++;
+           }
+     }
+   return(moved);
+  }
+
+//+------------------------------------------------------------------+
+//| Posune vsechny cekajici prikazy experta i s jejich SL a PT.      |
+//|  delta  - posun v cene (kladny = nahoru)                         |
+//|  failed - in/out: pocet neuspechu                                |
+//| SL a PT jedou s prikazem, takze vzdalenosti, riziko i objem      |
+//| zustavaji (pamet pro dorovnani po vyplneni plati dal). Posun     |
+//| prikaz neprevadi na jiny typ - kdyby se dostal na spatnou stranu |
+//| trhu nebo do stop levelu (PendingPriceValid), nepohne se.        |
+//| Vraci pocet posunutych prikazu.                                  |
+//+------------------------------------------------------------------+
+int MovePendingOrders(const double delta, int &failed)
+  {
+   const double stops = StopsLevelPrice();
+   const double bid   = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask   = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   int moved = 0;
+
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      const ulong ticket = OrderGetTicket(i);
+      if(ticket == 0 || !IsOurOrder())
+         continue;
+
+      const long   type     = OrderGetInteger(ORDER_TYPE);
+      const bool   isStop   = (type == ORDER_TYPE_BUY_STOP || type == ORDER_TYPE_SELL_STOP);
+      const double sl       = OrderGetDouble(ORDER_SL);
+      const double tp       = OrderGetDouble(ORDER_TP);
+      const double newPrice = NormalizePrice(OrderGetDouble(ORDER_PRICE_OPEN) + delta);
+      if(!PendingPriceValid(IsBuyOrderType(type), isStop, newPrice, ask, bid, stops))
+        {
+         RejectMove(failed, "příkaz", ticket, newPrice);
+         continue;
+        }
+      // Chybejici SL / PT zustava chybejici (0 se neposouva)
+      if(ModifyOrderLevels(ticket, newPrice,
+                           sl > 0.0 ? NormalizePrice(sl + delta) : 0.0,
+                           tp > 0.0 ? NormalizePrice(tp + delta) : 0.0, failed))
+         moved++;
+     }
+   return(moved);
+  }
+
+//+------------------------------------------------------------------+
+//| Proc tlacitka posunu zesednou ("" = lze posouvat).               |
+//|  st         - stav spocteny pro toto prekresleni                 |
+//|  moveOrders - rezim: true = cele cekajici prikazy, false = SL    |
+//| Posun je uprava existujicich obchodu, ridi se tedy povolenim     |
+//| zavirani (jde i v rezimu "jen zavirani").                        |
+//+------------------------------------------------------------------+
+string MoveBlockReason(const SPanelState &st, const bool moveOrders)
+  {
+   if(!st.canClose)
+      return("nelze upravovat - " + st.closeReason);
+   if(moveOrders && st.orders == 0)
+      return("žádný čekající příkaz experta");
+   if(!moveOrders && st.orders + st.positions == 0)
+      return("žádná pozice ani příkaz experta");
+   return("");
+  }
+
+//+------------------------------------------------------------------+
+//| Stisk prepinace rezimu posunu (SL / PO).                         |
+//|  orders - true = posouvat cele cekajici prikazy, false = SL      |
+//+------------------------------------------------------------------+
+void OnMoveModeButton(const bool orders)
+  {
+   g_moveOrders = orders;
+   g_lastEvent  = orders ? "posun: čekající příkazy (PO)" : "posun: SL pozic a příkazů";
+   UpdatePanel();
+   ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
+//| Stisk tlacitka posunu.                                           |
+//|  up   - true = 1. rada (nahoru), false = 2. rada (dolu)          |
+//|  step - krok posunu (0 = maly, 1 = stredni, 2 = velky)           |
+//| Podle rezimu posune SL vsech pozic a prikazu experta, nebo cele  |
+//| cekajici prikazy. Bez potvrzovani, jako zavirani. Predem se      |
+//| hlida jen povoleni uprav - prazdny trh pozna posun sam (nic).    |
+//+------------------------------------------------------------------+
+void OnMoveButton(const bool up, const int step)
+  {
+   if(step < 0 || step >= PQE_MOVE_STEPS)
+      return;
+   const double delta = (up ? 1.0 : -1.0) * MoveStepPoints(step) * _Point;
+   const string label = (g_moveOrders ? "PO " : "SL ") + MoveButtonText(up, step);
+
+   string reason;
+   if(!ClosingAllowed(reason))
+      g_lastEvent = label + ": nelze upravovat - " + reason;
+   else
+     {
+      int failed = 0;
+      const int moved = g_moveOrders ? MovePendingOrders(delta, failed) : MoveStopLosses(delta, failed);
+      g_lastEvent = (moved + failed == 0)
+                    ? label + ": nic k posunu"
+                    : StringFormat("%s: posunuto %d%s", label, moved, FailedSuffix(failed));
+     }
+   Print("PQE: ", g_lastEvent);
+
+   UpdatePanel();
+   ChartRedraw();
+  }
+
+//+------------------------------------------------------------------+
 //| Vyber mista vstupu                                               |
 //+------------------------------------------------------------------+
 
@@ -2407,7 +2721,8 @@ int Dpi(const double base)
 //| Poradi shora: titulek, tri pole formulare, predvolby rizika,     |
 //| pocet pozic (1 / 2 / 3), pet                                     |
 //| rad tlacitek (BUYSTOP / SELLSTOP, BUY / SELL, BUY / SELL MARKET, |
-//| zavirani, castecne zavreni) a stavove radky. Vyska vznika        |
+//| zavirani, castecne zavreni), dve rady posunu SL / prikazu        |
+//| a stavove radky. Vyska vznika                                    |
 //| soucasne s polohami, takze pozadi panelu i IsInsidePanel vzdy    |
 //| odpovidaji tomu, co je vykreslene -                              |
 //| pri pridani radku uz neni co udrzovat na dvou mistech.           |
@@ -2450,6 +2765,10 @@ void BuildLayout(SPanelLayout &lo)
    y += lo.btnH + lo.gap;
    lo.yPartial = y;
    y += lo.btnH + lo.gap;
+   lo.yMoveUp = y;
+   y += Px(PQE_RISK_BTN_H) + lo.gap;
+   lo.yMoveDown = y;
+   y += Px(PQE_RISK_BTN_H) + lo.gap;
    lo.yStatus = y;
    y += PQE_STATUS_LINES * lo.statusH;
 
@@ -2572,6 +2891,10 @@ void UpdatePanel()
 
    //--- Posledni rada: castecne zavreni jedine pozice (100 %, 50 % ...)
    DrawPartialButtons(x, lo.yPartial, inner, lo.btnH, st);
+
+   //--- Dve rady posunu SL / cekajicich prikazu (nahoru, dolu)
+   DrawMoveRow(true,  x, lo.yMoveUp,   inner, st);
+   DrawMoveRow(false, x, lo.yMoveDown, inner, st);
 
    //--- Stavove radky
    string lines[PQE_STATUS_LINES];
@@ -2881,6 +3204,54 @@ void DrawPartialButtons(const int x, const int y, const int w, const int btnH,
       DrawButton(PQE_OBJ_BTN_PARTIAL + IntegerToString(i), bx, y, bw, btnH,
                  "ZAV " + FormatPercent(percent),
                  (blocked == "") ? PQE_COLOR_BTN_PARTIAL : PQE_COLOR_BTN_OFF, tooltip, 0);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Vykresli jednu radu posunu: 1. rada nahoru, 2. rada dolu.        |
+//| Prvni tlacitko rady je prepinac rezimu - SL v 1. rade (posun SL  |
+//| vsech pozic a prikazu), PO ve 2. rade (posun celych cekajicich   |
+//| prikazu); zvoleny rezim je zvyrazneny. Za nim jsou kroky maly /  |
+//| stredni / velky. Kroky zesednou, kdyz v danem rezimu neni co     |
+//| posunout nebo upravy nejdou (duvod je v bubline).                |
+//|  up   - rada nahoru (true) nebo dolu (false)                     |
+//|  x, y - poloha rady, w - celkova sirka rady v pixelech           |
+//|  st   - stav spocteny pro toto prekresleni                       |
+//+------------------------------------------------------------------+
+void DrawMoveRow(const bool up, const int x, const int y, const int w, const SPanelState &st)
+  {
+   const int    gap     = Px(PQE_RISK_BTN_GAP);
+   const int    btnH    = Px(PQE_RISK_BTN_H);
+   const int    cells   = PQE_MOVE_STEPS + 1;   // prepinac + kroky
+   const string blocked = MoveBlockReason(st, g_moveOrders);
+   const string target  = g_moveOrders ? "všechny čekající příkazy experta i s SL a PT"
+                                       : "SL všech pozic a čekajících příkazů experta";
+   int bx, bw;
+
+   //--- Prepinac rezimu: SL v rade nahoru, PO v rade dolu
+   RowCell(x, w, cells, gap, 0, bx, bw);
+   DrawButton(up ? PQE_OBJ_BTN_MOVE_SL : PQE_OBJ_BTN_MOVE_PO, bx, y, bw, btnH,
+              up ? "SL" : "PO",
+              (g_moveOrders != up) ? PQE_COLOR_BTN_RISK_ON : PQE_COLOR_BTN_RISK_OFF,
+              up ? "Tlačítka posunu budou hýbat SL pozic a čekajících příkazů."
+                 : "Tlačítka posunu budou hýbat celými čekajícími příkazy (i s SL a PT).",
+              0);
+
+   //--- Kroky posunu
+   for(int step = 0; step < PQE_MOVE_STEPS; step++)
+     {
+      const int points = MoveStepPoints(step);
+      RowCell(x, w, cells, gap, step + 1, bx, bw);
+      const string tooltip = (blocked != "")
+                             ? "Nelze: " + blocked
+                             : StringFormat("Posune %s o %d b (%s) %s.", target, points,
+                                            DoubleToString(points * _Point, _Digits),
+                                            up ? "nahoru" : "dolů");
+      DrawButton((up ? PQE_OBJ_BTN_MOVE_UP : PQE_OBJ_BTN_MOVE_DOWN) + IntegerToString(step),
+                 bx, y, bw, btnH, MoveButtonText(up, step),
+                 (blocked != "") ? PQE_COLOR_BTN_OFF
+                 : (up ? PQE_COLOR_BTN_MOVE_UP : PQE_COLOR_BTN_MOVE_DOWN),
+                 tooltip, 0);
      }
   }
 

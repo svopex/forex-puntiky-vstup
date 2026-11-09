@@ -7,8 +7,9 @@ vznikne **STOP příkaz**, **LIMIT příkaz**, nebo **MARKET příkaz** (tlačí
 `BUYSTOP` / `SELLSTOP` LIMIT nezadávají), vždy rovnou se **stop lossem
 a profit targetem** a s objemem dopočítaným z **rizika v procentech zůstatku
 účtu** (výchozí 1 %). Tlačítka `BUY MARKET` / `SELL MARKET` vstoupí za trh
-**hned jedním kliknutím**, bez výběru místa v grafu. Poslední řada tlačítek
-zavře zadané procento otevřené pozice. Obchoduje se vždy symbol grafu, na
+**hned jedním kliknutím**, bez výběru místa v grafu. Řada tlačítek `ZAV …`
+zavře zadané procento otevřené pozice a dvě řady pod ní **posunou SL nebo
+celé čekající příkazy** nahoru či dolů. Obchoduje se vždy symbol grafu, na
 kterém expert běží.
 
 Expert sám nikdy nic neobchoduje — dělá jen to, co se mu klikne.
@@ -143,6 +144,37 @@ vstupem `InpClosePresets`, nejvýše 4 tlačítka) zavře za trh část pozic:
 Na netting účtu, kde MT5 částečné zavření pozice nezná, se pozice zmenší
 obchodem opačným směrem (bez SL a PT, úrovně pozice zůstanou).
 
+### Posun SL a čekajících příkazů
+
+Pod řadou `ZAV …` jsou dvě řady tlačítek:
+
+```
+[ SL ] [ +10 ] [ +50 ] [ +200 ]   ← posun nahoru
+[ PO ] [ -10 ] [ -50 ] [ -200 ]   ← posun dolů
+```
+
+První tlačítka řad jsou **přepínač režimu** (zvolený je modrý, po startu `SL`):
+
+| Režim | Co posun udělá |
+|---|---|
+| `SL` | posune **SL všech pozic i čekajících příkazů** experta; vstup, PT a objem zůstávají (riziko se tedy mění) |
+| `PO` | posune **celé čekající příkazy** (pending orders) experta i s jejich SL a PT — vzdálenosti, objem i riziko zůstávají |
+
+Zbytek první řady posouvá **nahoru**, zbytek druhé **dolů** o malý krok na
+doladění, střední a velký krok — výchozí 10 / 50 / 200 bodů (u XAUUSD
+0,10 / 0,50 / 2,00), nastavitelné vstupy `InpMoveMinPoints`,
+`InpMoveMidPoints`, `InpMoveMaxPoints`.
+
+- Hýbe se vždy se **všemi** pozicemi / příkazy experta naráz (typicky 1–3
+  z jednoho vstupu); obchody bez SL režim `SL` přeskočí.
+- SL musí zůstat na ztrátové straně dál než stop-level brokera (u pozice od
+  aktuální ceny, u příkazu od jeho vstupu). Příkaz se posunem nepřevede na
+  jiný typ — kdyby se BUY STOP dostal pod Ask apod., zůstane na místě. Co se
+  posunout nedá, se počítá jako `selhalo` a důvod je v Expert logu.
+- Po posunu SL čekajícího příkazu se po vyplnění dorovná už nová vzdálenost SL.
+- Bez potvrzování; tlačítka, která v daném režimu nemají co posunout, jsou
+  šedá s důvodem v bublině.
+
 SL a PT se měří **od vstupní ceny** v bodech (`_Point` symbolu — u XAUUSD se
 dvěma desetinnými místy je 300 bodů = 3,00 USD). Panel na řádku `SL … PT …`
 vždy ukazuje přepočet na cenu.
@@ -186,6 +218,7 @@ se vstupem `InpAlignStopsToFill`.
 | `InpExpirationMinutes` | `0` | Platnost čekajícího příkazu (STOP i LIMIT) v minutách (0 = do zrušení) |
 | `InpAlignStopsToFill` | `true` | Po vyplnění dorovnat SL/PT na skutečnou plnicí cenu |
 | `InpMagic` | `202608281524` | Magic number příkazů experta |
+| `InpMoveMinPoints`, `InpMoveMidPoints`, `InpMoveMaxPoints` | `10`, `50`, `200` | Kroky tlačítek posunu SL / čekajících příkazů (body) |
 | `InpPanelX`, `InpPanelY` | `12`, `22` | Poloha panelu v pixelech při 96 DPI (škáluje se s DPI monitoru) |
 | `InpPanelOneClickShift` | `60` | Posun panelu dolů, když je zapnuté okno One Click Trading MT5 (px při 96 DPI) |
 | `InpPanelFontSize` | `10` | Velikost písma panelu — celý panel včetně tlačítek se s ním zvětšuje |
@@ -214,6 +247,8 @@ Riziko (%)           [1.00    ]
 [ BUY MARKET  ] [ SELL MARKET ]           ← vstup za trh hned
 [ZRUŠIT PŘÍKAZY] [ZAVŘÍT 1] [ZAVŘÍT VŠE]
 [ZAV 100%] [ZAV 50%] [ZAV 25%] [ZAV 15%]  ← díl z každé pozice
+[ SL ] [ +10 ] [ +50 ] [ +200 ]           ← SL / PO = co se posouvá
+[ PO ] [ -10 ] [ -50 ] [ -200 ]           ← 1. řada nahoru, 2. dolů
 stav: připraven - stiskni BUY nebo SELL
 objem 0.33 lot = 99.00 USD (0.99 %)
 SL 300 b = 3.00   PT 300 b = 3.00
@@ -289,7 +324,7 @@ panelu. Před každým nasazením nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.60**
+**Aktuální verze: 1.70**
 
 ## Struktura repozitáře
 
