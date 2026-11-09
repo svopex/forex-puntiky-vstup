@@ -34,9 +34,10 @@ Expert sám nikdy nic neobchoduje — dělá jen to, co se mu klikne.
    ho do pole, zvýrazněné je tlačítko odpovídající aktuální hodnotě (po startu
    tedy `InpRiskPercent`, výchozí 1 %). Ručně zapsaná hodnota mimo předvolby
    nezvýrazní žádné.
-   Pod ní je řada `1  2  3` — **kolik pozic vstup otevře** (viz
+   Pod ní je řada `100%  50/50  50/40/10  40/35/25` — **na kolik pozic a v jakém
+   poměru se riziko rozdělí** (viz
    [Více pozic jedním vstupem](#více-pozic-jedním-vstupem)); po startu je
-   vybraná `1`.
+   vybraná `100%`.
 3. Stiskni `BUY` nebo `SELL` (případně `BUYSTOP` nebo `SELLSTOP` v řadě nad
    nimi, viz níže). Tlačítko se změní na `ZRUŠIT BUY` / `ZRUŠIT SELL`
    (`ZRUŠIT BUYSTOP` / `ZRUŠIT SELLSTOP`) a za myší začne jezdit **linka
@@ -74,32 +75,36 @@ jiného tlačítka vstupu během výběru jen přepne směr nebo variantu.
 
 ### Více pozic jedním vstupem
 
-Řada tlačítek `1`, `2`, `3` pod předvolbami rizika určí, kolik pozic otevře
+Řada tlačítek rozdělení rizika pod předvolbami rizika určí, kolik pozic otevře
 každý vstup (`BUY` / `SELL`, `BUYSTOP` / `SELLSTOP` i `BUY MARKET` /
-`SELL MARKET`):
+`SELL MARKET`) a jaký podíl rizika každá dostane:
 
-| Tlačítko | Pozice | PT |
+| Tlačítko | Pozice | Podíl rizika pro PT, 2×PT, 3×PT |
 |---|---|---|
-| `1` | jedna | PT |
-| `2` | dvě | PT a 2×PT |
-| `3` | tři | PT, 2×PT a 3×PT |
+| `100%` | jedna | 100 % (PT) |
+| `50/50` | dvě | 50 % (PT), 50 % (2×PT) |
+| `50/40/10` | tři | 50 % (PT), 40 % (2×PT), 10 % (3×PT) |
+| `40/35/25` | tři | 40 % (PT), 35 % (2×PT), 25 % (3×PT) |
 
+- **Nejbližší PT dostane první podíl**, nejvzdálenější poslední.
 - **SL je všem pozicím stejný** (z pole `SL (body)`), PT se násobí pořadím
   pozice; při `PT = 0` jsou všechny pozice bez PT.
-- **Riziko z pole `Riziko (%)` se dělí mezi pozice rovným dílem** — celková
-  ztráta při zásahu SL tak odpovídá zadanému procentu. Např. riziko 3 %
-  a `3` = tři pozice po 1 %. Každý díl se zaokrouhlí dolů na krok objemu;
-  když na díl nestačí minimální lot, vstup se nezadá. Marže se ověřuje za
-  všechny pozice dohromady.
+- **Riziko z pole `Riziko (%)` se dělí podle poměru** — celková ztráta při
+  zásahu SL tak odpovídá zadanému procentu. Např. riziko 2 % a `50/40/10` =
+  pozice s rizikem 1 %, 0,8 % a 0,2 %. Objem každé pozice se zaokrouhlí dolů
+  na krok objemu zvlášť; když na některou nestačí minimální lot (typicky ta
+  s 10 %), vstup se nezadá a panel řekne, která pozice to je. Marže se ověřuje
+  za všechny pozice dohromady.
 - Každá pozice je samostatný příkaz (komentář `PQE BUYSTOP 2/3` apod.); když
   server některý odmítne, další se už neposílají a panel ukáže, kolik jich
   prošlo.
-- Náhled v grafu kreslí linku PT pro každou pozici, popisek a řádek `objem`
-  ukazují objem jako `3x0.11 lot`.
+- Náhled v grafu kreslí linku PT pro každou pozici; popisek a řádek `objem`
+  ukazují objemy pozic jako `0.05/0.04/0.01`.
 - Funguje jen na **hedging** účtu — netting by pozice sloučil do jedné
-  s jediným PT, proto tam jsou `2` a `3` šedé.
+  s jediným PT, proto tam jsou rozdělení na víc pozic šedá.
 
-Po spuštění experta (i po změně parametrů nebo rekompilaci) je vybraná `1`.
+Po spuštění experta (i po změně parametrů nebo rekompilaci) je vybrané `100%`.
+Poměry jsou v kódu (tabulka `g_splitShares`).
 
 ### Vstup za trh jedním kliknutím
 
@@ -259,7 +264,7 @@ SL (body)   [nastav] [300     ]     ← nastav = změřit SL/PT v grafu
 PT (body)            [300     ]
 Riziko (%)           [1.00    ]
 [0.5%] [1%] [1.5%] [2%] [2.5%] [3%]     ← vybrané zvýrazněno modře
-[   1   ] [   2   ] [   3   ]           ← počet pozic (PT, 2×PT, 3×PT)
+[100%] [50/50] [50/40/10] [40/35/25]    ← rozdělení rizika (PT, 2×PT, 3×PT)
 [   BUYSTOP   ] [  SELLSTOP   ]
 [     BUY     ] [    SELL     ]
 [ BUY MARKET  ] [ SELL MARKET ]           ← vstup za trh hned
@@ -343,7 +348,7 @@ panelu. Před každým nasazením nové verze se zvýší:
 
 Commit s novou verzí se označí tagem `vX.YY`.
 
-**Aktuální verze: 1.80**
+**Aktuální verze: 1.90**
 
 ## Struktura repozitáře
 
